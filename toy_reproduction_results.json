@@ -1,0 +1,179 @@
+{
+  "seeds": [
+    0,
+    1,
+    2
+  ],
+  "runs": [
+    {
+      "seed": 0,
+      "dense_acc": 0.8525000214576721,
+      "checkpoints": [
+        {
+          "density": 0.84375,
+          "conv1_count": 27,
+          "hope_acc": 0.8412500023841858,
+          "random_acc": 0.8612499833106995,
+          "magnitude_acc": 0.8600000143051147
+        },
+        {
+          "density": 0.6875,
+          "conv1_count": 22,
+          "hope_acc": 0.8337500095367432,
+          "random_acc": 0.7925000190734863,
+          "magnitude_acc": 0.8025000095367432
+        },
+        {
+          "density": 0.53125,
+          "conv1_count": 17,
+          "hope_acc": 0.6850000023841858,
+          "random_acc": 0.6675000190734863,
+          "magnitude_acc": 0.7037500143051147
+        },
+        {
+          "density": 0.375,
+          "conv1_count": 12,
+          "hope_acc": 0.625,
+          "random_acc": 0.5724999904632568,
+          "magnitude_acc": 0.5450000166893005
+        },
+        {
+          "density": 0.25,
+          "conv1_count": 8,
+          "hope_acc": 0.42875000834465027,
+          "random_acc": 0.45124998688697815,
+          "magnitude_acc": 0.39250001311302185
+        }
+      ]
+    },
+    {
+      "seed": 1,
+      "dense_acc": 0.875,
+      "checkpoints": [
+        {
+          "density": 0.84375,
+          "conv1_count": 27,
+          "hope_acc": 0.925000011920929,
+          "random_acc": 0.9112499952316284,
+          "magnitude_acc": 0.9200000166893005
+        },
+        {
+          "density": 0.6875,
+          "conv1_count": 22,
+          "hope_acc": 0.8237500190734863,
+          "random_acc": 0.7925000190734863,
+          "magnitude_acc": 0.8787500262260437
+        },
+        {
+          "density": 0.53125,
+          "conv1_count": 17,
+          "hope_acc": 0.7137500047683716,
+          "random_acc": 0.7325000166893005,
+          "magnitude_acc": 0.7524999976158142
+        },
+        {
+          "density": 0.375,
+          "conv1_count": 12,
+          "hope_acc": 0.4612500071525574,
+          "random_acc": 0.5400000214576721,
+          "magnitude_acc": 0.48875001072883606
+        },
+        {
+          "density": 0.25,
+          "conv1_count": 8,
+          "hope_acc": 0.30125001072883606,
+          "random_acc": 0.4724999964237213,
+          "magnitude_acc": 0.38874998688697815
+        }
+      ]
+    },
+    {
+      "seed": 2,
+      "dense_acc": 0.8587499856948853,
+      "checkpoints": [
+        {
+          "density": 0.84375,
+          "conv1_count": 27,
+          "hope_acc": 0.9225000143051147,
+          "random_acc": 0.8949999809265137,
+          "magnitude_acc": 0.9237499833106995
+        },
+        {
+          "density": 0.6875,
+          "conv1_count": 22,
+          "hope_acc": 0.8475000262260437,
+          "random_acc": 0.8637499809265137,
+          "magnitude_acc": 0.8349999785423279
+        },
+        {
+          "density": 0.53125,
+          "conv1_count": 17,
+          "hope_acc": 0.7900000214576721,
+          "random_acc": 0.53125,
+          "magnitude_acc": 0.7099999785423279
+        },
+        {
+          "density": 0.375,
+          "conv1_count": 12,
+          "hope_acc": 0.6625000238418579,
+          "random_acc": 0.5099999904632568,
+          "magnitude_acc": 0.5637500286102295
+        },
+        {
+          "density": 0.25,
+          "conv1_count": 8,
+          "hope_acc": 0.42750000953674316,
+          "random_acc": 0.32875001430511475,
+          "magnitude_acc": 0.39250001311302185
+        }
+      ]
+    }
+  ],
+  "summary": [
+    {
+      "density_mean": 0.84375,
+      "hope_mean": 0.8962500095367432,
+      "hope_std": 0.04764780402183533,
+      "random_mean": 0.8891666531562805,
+      "random_std": 0.025505315512418747,
+      "magnitude_mean": 0.9012499451637268,
+      "magnitude_std": 0.03577271103858948
+    },
+    {
+      "density_mean": 0.6875,
+      "hope_mean": 0.8350000381469727,
+      "hope_std": 0.011924244463443756,
+      "random_mean": 0.8162500262260437,
+      "random_std": 0.041136182844638824,
+      "magnitude_mean": 0.8387500643730164,
+      "magnitude_std": 0.03826307877898216
+    },
+    {
+      "density_mean": 0.53125,
+      "hope_mean": 0.7295833230018616,
+      "hope_std": 0.05426114425063133,
+      "random_mean": 0.643750011920929,
+      "random_std": 0.10270559787750244,
+      "magnitude_mean": 0.722083330154419,
+      "magnitude_std": 0.026526322588324547
+    },
+    {
+      "density_mean": 0.375,
+      "hope_mean": 0.5829166769981384,
+      "hope_std": 0.10702171176671982,
+      "random_mean": 0.5408332943916321,
+      "random_std": 0.03125833347439766,
+      "magnitude_mean": 0.5325000286102295,
+      "magnitude_std": 0.039031244814395905
+    },
+    {
+      "density_mean": 0.25,
+      "hope_mean": 0.38583335280418396,
+      "hope_std": 0.07325398176908493,
+      "random_mean": 0.41750001907348633,
+      "random_std": 0.07759065926074982,
+      "magnitude_mean": 0.39125001430511475,
+      "magnitude_std": 0.0021650786511600018
+    }
+  ]
+}

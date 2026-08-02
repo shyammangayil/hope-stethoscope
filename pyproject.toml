@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hope-stethoscope"
+version = "0.1.0"
+description = "Unofficial implementation of HOPE (arXiv:2607.21366) — Hilbert-operator neuron compression and DEFT fine-tuning"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.0",
+    "numpy>=1.24",
+    "scipy>=1.10",
+    "click>=8.0",
+    "tqdm>=4.60",
+    "matplotlib>=3.5",
+]
+
+[project.optional-dependencies]
+resnet50 = ["torchvision>=0.15"]
+dev = ["pytest>=7.0"]
+
+[project.scripts]
+hope = "cli:cli"
+
+[tool.setuptools]
+py-modules = ["cli"]
+
+[tool.setuptools.packages.find]
+include = ["hope_core*"]

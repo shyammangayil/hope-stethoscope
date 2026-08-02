@@ -1,0 +1,10 @@
+torch>=2.0
+numpy>=1.24
+scipy>=1.10
+pytest>=7.0
+click>=8.0
+tqdm>=4.60
+matplotlib>=3.5
+
+# Only needed for scripts/reproduce_paper_resnet50.py:
+# torchvision>=0.15
