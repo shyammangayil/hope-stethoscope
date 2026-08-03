@@ -169,3 +169,112 @@ def test_inspect_reports_missing_module_name_clearly():
         result = runner.invoke(cli, ["inspect", model_path, "--layer-config", config_path, "--target-density", "0.5"])
         assert result.exit_code != 0
         assert "does_not_exist" in result.output
+
+
+# ---------------------------------------------------------------------------
+# KV-cache subsystem commands (hope kv ...). Only the network-free paths
+# (parse-modifier, benchmark, demo) are wrapped in the CLI so far -- see
+# cli.py's `kv` group docstring for why the real-Gemma path isn't yet.
+# ---------------------------------------------------------------------------
+
+
+def test_kv_parse_modifier_valid_spec():
+    runner = CliRunner()
+    result = runner.invoke(cli, ["kv", "parse-modifier", "zero:token_positions=0,4"])
+    assert result.exit_code == 0, result.output
+    parsed = json.loads(result.output)
+    assert parsed["name"] == "zero"
+    assert parsed["token_positions"] == [0, 4]
+
+
+def test_kv_parse_modifier_invalid_name_fails_clearly():
+    runner = CliRunner()
+    result = runner.invoke(cli, ["kv", "parse-modifier", "not_a_real_modifier:foo=1"])
+    assert result.exit_code != 0
+    assert "Unknown modifier" in result.output
+
+
+def test_kv_benchmark_synthetic_default():
+    runner = CliRunner()
+    result = runner.invoke(cli, ["kv", "benchmark"])
+    assert result.exit_code == 0, result.output
+    assert "synthetic KV block" in result.output
+    for plugin_name in ["fp8", "int4", "low_rank", "sliding_window", "token_eviction", "head_pruning"]:
+        assert plugin_name in result.output
+
+
+def test_kv_benchmark_specific_plugins_and_json_output():
+    runner = CliRunner()
+    with tempfile.TemporaryDirectory() as tmp:
+        out_path = os.path.join(tmp, "results.json")
+        result = runner.invoke(cli, ["kv", "benchmark", "--plugins", "fp8,int4", "--out", out_path])
+        assert result.exit_code == 0, result.output
+        assert "sliding_window" not in result.output  # only requested plugins should run
+        with open(out_path) as f:
+            results = json.load(f)
+        assert {r["plugin"] for r in results} == {"fp8", "int4"}
+        assert all(r["compression_ratio"] > 0 for r in results)
+
+
+def test_kv_benchmark_unknown_plugin_fails_clearly():
+    runner = CliRunner()
+    result = runner.invoke(cli, ["kv", "benchmark", "--plugins", "not_a_real_plugin"])
+    assert result.exit_code != 0
+    assert "Unknown plugin" in result.output
+
+
+def test_kv_benchmark_is_reproducible_given_same_seed():
+    """Same seed -> same synthetic data -> same compression_ratio/max_err,
+    so this command is actually useful for regression-checking a plugin
+    change. latency_ms is real wall-clock timing and correctly excluded
+    from this comparison -- it was never going to be reproducible run to
+    run, and asserting full output equality here would be testing the
+    system clock, not this command."""
+    import json as _json
+    import re
+
+    runner = CliRunner()
+    with tempfile.TemporaryDirectory() as tmp:
+        out1, out2 = os.path.join(tmp, "r1.json"), os.path.join(tmp, "r2.json")
+        r1 = runner.invoke(cli, ["kv", "benchmark", "--plugins", "fp8", "--seed", "7", "--out", out1])
+        r2 = runner.invoke(cli, ["kv", "benchmark", "--plugins", "fp8", "--seed", "7", "--out", out2])
+        assert r1.exit_code == 0 and r2.exit_code == 0
+
+        with open(out1) as f:
+            results1 = _json.load(f)
+        with open(out2) as f:
+            results2 = _json.load(f)
+        assert results1[0]["compression_ratio"] == results2[0]["compression_ratio"]
+        assert results1[0]["max_abs_err"] == results2[0]["max_abs_err"]
+        assert results1[0]["passed"] == results2[0]["passed"]
+        # sanity: latency really does vary (or this test isn't checking what it claims to)
+        # -- not asserted strictly (could coincidentally match), just documented via the
+        # field being present and read, not silently dropped from the comparison above.
+        assert "latency_ms" in results1[0]
+
+
+def test_kv_benchmark_against_real_npy_file():
+    """Exercises the --npy path with a hand-shaped array, matching real
+    Gemma's confirmed (kv_heads, seq_len, head_dim) shape (see op.txt)."""
+    import numpy as np
+
+    runner = CliRunner()
+    with tempfile.TemporaryDirectory() as tmp:
+        npy_path = os.path.join(tmp, "kv_block.npy")
+        rng = np.random.default_rng(0)
+        np.save(npy_path, rng.normal(scale=25.0, size=(4, 12, 256)).astype(np.float32))
+
+        result = runner.invoke(cli, ["kv", "benchmark", "--npy", npy_path, "--plugins", "fp8"])
+        assert result.exit_code == 0, result.output
+        assert "synthetic" not in result.output  # should report using the real file, not synthetic data
+
+
+def test_kv_demo_runs_end_to_end_through_cli():
+    """Slower (full pipeline), but this is the one test that would catch the
+    CLI wrapper itself breaking something run_demo.py's own execution
+    wouldn't (e.g. a Click context/argument-parsing issue)."""
+    runner = CliRunner()
+    result = runner.invoke(cli, ["kv", "demo"])
+    assert result.exit_code == 0, result.output
+    assert "SUCCESS CRITERIA" in result.output
+    assert "DONE" in result.output

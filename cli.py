@@ -58,6 +58,16 @@ from hope_core.layer_state import LayerState
 from hope_core.neuron import NeuronBank
 from hope_core.report import StethoscopeReport
 
+# KV-cache subsystem imports -- deliberately kept separate from the
+# hope_core imports above rather than interleaved, matching this whole
+# repo's "shared infrastructure, not shared algorithms" principle (see
+# README.md): these two import blocks correspond to genuinely different
+# subsystems that happen to share one CLI entry point, not one shared
+# module graph.
+from core.kv_modifiers import MODIFIER_REGISTRY, parse_modifier_spec
+from compression.plugins import PLUGIN_REGISTRY, get_plugin
+from harness.evaluator import Evaluator
+
 
 def _get_module(model: torch.nn.Module, name: str) -> torch.nn.Module:
     module = dict(model.named_modules()).get(name)
@@ -221,6 +231,96 @@ def deft_setup(model_path, layer_config, percentile, out):
     with open(out, "w") as f:
         json.dump(result, f, indent=2)
     click.echo(f"Elasticity map ({result['core_count']} core / {result['slack_count']} slack) written to {out}")
+
+
+@cli.group()
+def kv():
+    """KV-cache introspection and compression (core/, compression/, harness/).
+
+    Deliberately a separate command group, not folded into the top-level
+    commands above -- see README.md's "shared infrastructure, not shared
+    algorithms" principle. Only network-free operations are wrapped here so
+    far (parse-modifier, benchmark, demo); the full real-Gemma
+    inspect/modify/--compare-baseline workflow is still
+    `python -m examples.run_gemma` directly, since that path needs
+    torch+transformers+network access this CLI wrapper hasn't been
+    exercised against. See docs/kv_cache.md.
+    """
+
+
+@kv.command(name="parse-modifier")
+@click.argument("spec")
+def kv_parse_modifier(spec):
+    """Validate and echo a modifier spec, e.g. 'zero:token_positions=0,4'.
+
+    Useful for checking syntax before committing to a slow real-model run --
+    this only imports core.kv_modifiers (no torch/transformers needed).
+    """
+    try:
+        modifier = parse_modifier_spec(spec)
+    except ValueError as e:
+        raise click.ClickException(str(e))
+    click.echo(json.dumps(modifier.describe(), indent=2))
+
+
+@kv.command(name="benchmark")
+@click.option("--npy", default=None, help="Path to a saved KV block (.npy, shape [heads, seq, head_dim] "
+                                            "or [batch, heads, seq, head_dim]). Omit to use synthetic data.")
+@click.option("--plugins", default=None, help="Comma-separated plugin names to run (default: all). "
+                                                f"Available: {', '.join(PLUGIN_REGISTRY)}")
+@click.option("--seed", type=int, default=0, help="Seed for synthetic data (ignored if --npy is given).")
+@click.option("--out", default=None, help="Optional path to write the results as JSON.")
+def kv_benchmark(npy, plugins, seed, out):
+    """Run the compression-plugin benchmark table against a KV block.
+
+    Pure numpy end to end (compression/plugins.py + harness/evaluator.py) --
+    no torch, no network, works the same whether the block came from a real
+    model (saved separately via `np.save`) or synthetic data.
+    """
+    import numpy as np
+
+    if npy:
+        kv_block = np.load(npy)
+    else:
+        rng = np.random.default_rng(seed)
+        kv_block = rng.normal(scale=20.0, size=(4, 10, 256)).astype(np.float32)  # matches real Gemma's shape, see op.txt
+        click.echo(f"No --npy given, using synthetic KV block shape={kv_block.shape} (seed={seed})")
+
+    plugin_names = [p.strip() for p in plugins.split(",")] if plugins else list(PLUGIN_REGISTRY)
+    unknown = set(plugin_names) - set(PLUGIN_REGISTRY)
+    if unknown:
+        raise click.ClickException(f"Unknown plugin(s) {sorted(unknown)}. Available: {list(PLUGIN_REGISTRY)}")
+
+    evaluator = Evaluator()
+    results = []
+    click.echo(f"\n{'plugin':>16} | {'ratio':>7} | {'latency_ms':>10} | {'max_err':>10} | status")
+    click.echo("-" * 66)
+    for name in plugin_names:
+        report = evaluator.benchmark_plugin(get_plugin(name), kv_block)
+        status = "PASS" if report.passed else "below threshold"
+        err_str = f"{report.reconstruction_max_abs_err:.5f}" if report.reconstruction_max_abs_err is not None else "N/A"
+        click.echo(f"{name:>16} | {report.compression_ratio:>6.2f}x | {report.latency_ms:>10.4f} | {err_str:>10} | {status}")
+        results.append({
+            "plugin": name, "compression_ratio": report.compression_ratio,
+            "latency_ms": report.latency_ms, "max_abs_err": report.reconstruction_max_abs_err,
+            "passed": report.passed,
+        })
+
+    if out:
+        with open(out, "w") as f:
+            json.dump(results, f, indent=2)
+        click.echo(f"\nResults written to {out}")
+
+
+@kv.command(name="demo")
+def kv_demo():
+    """Run the full KV-cache pipeline (hooks -> inspector -> compression ->
+    harness -> storage) against a synthetic model. No network, no torch
+    required. Thin wrapper around examples/run_demo.py's own main() --
+    reuses it directly rather than reimplementing the pipeline here."""
+    from examples.run_demo import main as run_demo_main
+
+    run_demo_main()
 
 
 if __name__ == "__main__":

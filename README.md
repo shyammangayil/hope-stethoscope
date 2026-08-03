@@ -1,289 +1,159 @@
-# hope-stethoscope
+# HOPE Stethoscope
 
-A from-scratch implementation of **HOPE** (Hilbert Operator for Progressive
-Encoding) — arXiv:[2607.21366](https://arxiv.org/abs/2607.21366), Hossein
-Mobahi and Peter L. Bartlett, Google DeepMind / UC Berkeley, posted 23 Jul
-2026 — a data-free-for-BatchNorm framework that models neurons as rank-1
-Hilbert-Schmidt operators, unifying pruning and neuron-merging as low-rank
-subspace projection, plus **DEFT** (Dispersed Elastic Fine-Tuning), the
-paper's own capacity-informed fine-tuning method.
+An observability-and-intervention platform for neural networks, currently
+made of two independently-validated subsystems that got merged into one
+repository:
 
-**Read this whole README before trusting any result from this repo.** It's
-written to tell you exactly what's been verified, how, and what hasn't —
-not to sell the library. The single most important fact about this codebase
-is in the next section.
+- **Weight-space compression** (`hope_core/`) — an implementation of HOPE
+  (arXiv:2607.21366), modeling neurons as rank-1 Hilbert-Schmidt operators to
+  prune and merge redundant capacity in trained weights.
+- **KV-cache introspection & compression** (`core/`, `compression/`,
+  `harness/`, `integrations/`) — hooks into a running HuggingFace model's KV
+  cache during generation, to observe, benchmark-compress, and (experimentally)
+  causally edit it.
 
-## What's actually been validated (read this first)
+Full detail on each lives in its own doc — **read those, not just this file,
+before trusting either subsystem**: [`docs/weight_compression.md`](docs/weight_compression.md)
+and [`docs/kv_cache.md`](docs/kv_cache.md). This README is the map, not the
+territory.
 
-This was built and tested inside a sandboxed environment with no access to
-ImageNet, CIFAR, SVHN, or any pretrained-weight host. That materially limits
-what could be checked before handing this to you:
+## The one principle that shaped this merge
 
-| Claim | Status |
-|---|---|
-| The code correctly implements the paper's formulas | **Yes, high confidence.** 78 automated tests, including a Monte Carlo cross-check of the self-kernel against its own mathematical definition (not just against the paper's text), an exact-forward-pass round-trip check for every PyTorch adapter, and an end-to-end numerical check that a computed merge parent actually beats naive parameter-averaging on the paper's own distortion objective. See "What's tested" below. |
-| The paper's own published ResNet-50/ImageNet numbers reproduce | **Unverified.** This needs `scripts/reproduce_paper_resnet50.py` run against real ImageNet, which requires data and network access this build environment didn't have. The script is written and its *structural* correctness was verified against the real ResNet-50 architecture (see below) — but the actual accuracy numbers have never been produced. Run it yourself; treat that as the real gate before trusting this for anything beyond a toy. |
-| HOPE-guided compression beats magnitude/random pruning | **Not demonstrated, and that's an honest finding, not a hedge.** `scripts/toy_reproduction.py` runs entirely in-sandbox on synthetic data and shows graceful degradation with HOPE roughly competitive with (not clearly superior to) baselines, noisy across seeds — see "Toy reproduction results" below for the actual numbers. This is real evidence the *implementation* is sane, not evidence the *method* wins. |
+**Shared infrastructure, not shared algorithms.** These two subsystems now
+live in one repo, one `requirements.txt`, one test run — but weight-space
+Hilbert operator math and KV-cache tensor manipulation are genuinely
+different problems, and forcing them behind one shared abstraction (a
+`RepresentationOperator` base class, a unified "compress anything" API, etc.)
+before there's a real third method to generalize from would repeat the exact
+premature-abstraction mistake this project explicitly avoided when it was
+just `hope_core`. So: this merge is structural (one directory tree, one
+dependency list, one place to look), not architectural. Where the two
+subsystems genuinely share a shape — see "What's actually shared" below —
+that's called out explicitly, not implied by proximity.
 
-If you only read one more section, read **"Known limitations"** below —
-one of them (cross-layer weight propagation) will silently produce a wrong
-model if you don't know about it.
+## Validation status (read before trusting any number from either side)
+
+Both subsystems were built the same way: real code, real tests run against
+real (if sometimes synthetic) inputs, honest reporting of what failed. Both
+have the same category of open gap — validated in miniature, not yet
+confirmed at the scale that would make either one's own paper/claims stick:
+
+| Subsystem | What's independently verified | What's still open |
+|---|---|---|
+| Weight compression | 78 tests incl. a Monte Carlo check of the self-kernel formula against its own definition, and an end-to-end merge-optimality check against naive baselines. Toy reproduction (synthetic data) runs and shows sane, graceful degradation. | The paper's own ResNet-50/ImageNet numbers — needs real ImageNet + real pretrained weights, neither reachable from the sandbox this was built in. `scripts/reproduce_paper_resnet50.py` is written and structurally verified against the real ResNet-50 architecture, but never run against real data. |
+| KV-cache introspection | 80 tests. Full demo pipeline (`examples/run_demo.py`) re-run fresh in this session, including a real, un-hidden failing criterion (`hook_and_inspector_overhead_under_10pct`, measured +92% overhead) and a real infrastructure-unavailable guard firing correctly instead of fabricating a perplexity number. Confirmed (per `CHANGELOG.md`) working against real `google/gemma-3-4b-it` on 2026-07-29 for cache observation. | The causal-editing path (`--modifier ... --compare-baseline`) against real Gemma — status as of this merge is "some manual runs happened, not yet captured as a repeatable, checked-in result." The `hook_and_inspector_overhead_under_10pct` failure itself is real and unresolved, not cosmetic — worth understanding before relying on this for anything latency-sensitive. |
+
+**158 tests passed as of the initial merge, 175 as of the CLI update below** (`pytest tests/ -v`
+from the repo root) — the two suites were run independently before the merge
+and once more together immediately after, specifically to catch any
+import-path breakage from moving files around. None found.
+
+## What's actually shared (small, deliberate list)
+
+- One `requirements.txt`, one `pytest.ini`, one place to run `pytest tests/`.
+- Both subsystems independently converged on the same reporting instinct —
+  an append-only, timestamped record of every action taken (`ActionRecord`/
+  `StethoscopeReport` on the weight side, `KVEvent`/`ExperienceDB` on the KV
+  side) rather than only a final summary. That convergence is a real, useful
+  signal about what a future shared "observation" layer should look like —
+  but it hasn't been extracted into one yet. Doing that now, before a third
+  subsystem exists to check the abstraction against, would be exactly the
+  premature move this README just argued against. Noted as the most
+  promising concrete candidate for future unification, not acted on yet.
+- Nothing else. No shared base classes between `hope_core/merge.py` and
+  `compression/plugins.py`. No unified CLI yet (see "Not done" below) — they
+  currently have separate entry points, and that's an honest reflection of
+  not having merged their actual interfaces, not an oversight.
+
+## Directory layout
+
+```
+hope-stethoscope/
+├── hope_core/              # weight-space: kernels, capacity, merge, DEFT, etc.
+├── cli.py                  # weight-space CLI: hope inspect/compress/deft-setup
+│
+├── core/                   # KV-cache: hooks (CacheTap), storage, inspector, modifiers
+├── compression/             # KV-cache: fp8/int4/low-rank/window/eviction/pruning plugins
+├── harness/                  # KV-cache: evaluator, retry, budget, experiment router
+├── integrations/              # KV-cache: reference GEPA + Autoresearch adapters
+├── debugger/                   # KV-cache: Streamlit event-log explorer
+├── config/                      # KV-cache: models.yaml, budgets.yaml
+│
+├── scripts/                # weight-space toy + real (ResNet-50) reproduction
+├── examples/                # BOTH: quickstart.py (weights), run_demo.py /
+│                            #   run_gemma.py / run_mutation_demo.py (KV cache)
+├── tests/                   # BOTH subsystems' tests, 175 total
+├── docs/
+│   ├── weight_compression.md   # full README for hope_core (was the top-level README)
+│   └── kv_cache.md              # full README for the KV-cache subsystem
+├── NOTES.md                 # weight-space: paper-equation-to-code traceability
+├── CHANGELOG.md               # KV-cache subsystem's development history
+└── success_criteria.md         # KV-cache subsystem's own stated scorecard
+```
 
 ## Setup
 
 ```bash
-python3 -m venv venv && source venv/bin/activate   # or your preferred env tool
-pip install torch numpy scipy pytest click tqdm matplotlib
-# Only needed for scripts/reproduce_paper_resnet50.py:
-pip install torchvision
+python3 -m venv venv && source venv/bin/activate
+pip install -r requirements.txt
+# For real-model modes on either side (see the validation table above for
+# what that unlocks and what it doesn't):
+#   pip install torchvision                      # weight-space real repro
+#   pip install transformers accelerate           # KV-cache real Gemma
+python3 -m pytest tests/ -v   # expect 175 passed
 ```
-
-Tested against Python 3.12 and PyTorch 2.13 (CPU). No GPU is required for
-anything except a full local ResNet-50/ImageNet run, and even there the
-compression step itself is CPU-bound linear algebra on weight tensors, not
-GPU-bound — only training/inference benefits from a GPU.
-
-Verify the install:
-
-```bash
-python3 -m pytest tests/ -v
-```
-
-You should see 78 passed. If anything fails, stop here and check your torch
-version before going further — every number in this README assumes a clean
-run of this suite.
 
 ## Quick start
 
-### Python API
-
-```python
-import torch
-from hope_core.adapters import extract_linear_bn_bank, apply_bank_to_linear_bn
-from hope_core.layer_state import LayerState
-from hope_core.encoding_loop import ProgressiveEncodingLoop
-from hope_core.report import StethoscopeReport
-
-# model is any nn.Sequential(Linear, BatchNorm1d, ReLU, Linear, ...)
-bank = extract_linear_bn_bank(model[0], model[1], model[3])
-initial_bank = bank.clone()
-
-state = LayerState(bank=bank, delta_p_init=bank.w_raw.shape[1] + bank.w_out.shape[1] + 4)
-loop = ProgressiveEncodingLoop(layers={"fc1": state})
-loop.run(target_density=0.5)
-
-report = StethoscopeReport.from_loop(loop, {"fc1": initial_bank})
-print(report.to_dict())
-
-new_linear, new_bn, new_next_weight = apply_bank_to_linear_bn(state.bank, linear_bias=None, next_bias=None)
-```
-
-### CLI
-
+**Weight-space compression** — see [`docs/weight_compression.md`](docs/weight_compression.md)
+for the full CLI/API reference:
 ```bash
-# 1. Save a full model object (not just a state_dict) so the CLI can load it directly:
-python3 -c "
-import torch
-from my_model import MyModel
-m = MyModel(); m.load_state_dict(torch.load('weights.pt')); torch.save(m, 'model.pt')
-"
-
-# 2. Describe the one compressible layer you're targeting:
-cat > layer.json << 'EOF'
-{"kind": "linear", "linear_name": "fc1", "bn_name": "bn1", "next_linear_name": "fc2"}
-EOF
-
-# 3. Inspect (no model saved, just a report):
+python3 examples/quickstart.py
 python3 cli.py inspect model.pt --layer-config layer.json --target-density 0.5 --report-dir out/
-
-# 4. Actually compress and save:
-python3 cli.py compress model.pt --layer-config layer.json --target-density 0.5 \
-    --out compressed.pt --mask-out core_mask.json
-
-# 5. DEFT: compute a core/slack elasticity map (wiring it into a training loop is on you --
-#    see hope_core/deft.py's structural_mask/scale_gradient_/register_deft_gradient_hooks):
-python3 cli.py deft-setup model.pt --layer-config layer.json --percentile 70 --out elasticity.json
 ```
 
-Full command reference and the `layer.json` schema (including the `"kind":
-"conv"` case) are in `cli.py`'s module docstring.
-
-### Toy reproduction (runs immediately, no data needed)
-
+**KV-cache introspection** — see [`docs/kv_cache.md`](docs/kv_cache.md) for
+the full command reference, modifier syntax, and debugger instructions.
+Network-free operations are wrapped into the unified `cli.py` as of this
+update; the real-Gemma path is not (see "Not done" below):
 ```bash
-python3 scripts/toy_reproduction.py
+python3 cli.py kv demo                                   # full synthetic-model pipeline, no network needed
+python3 cli.py kv parse-modifier "zero:token_positions=0,4"   # validate a modifier spec before a slow real run
+python3 cli.py kv benchmark --plugins fp8,int4            # compression benchmark table, synthetic or --npy data
+
+python3 -m examples.run_gemma --model google/gemma-3-4b-it --prompt "..." --max-new-tokens 5   # real model, not yet CLI-wrapped
+streamlit run debugger/app_streamlit.py
 ```
 
-Trains a small synthetic-data CNN (~2 minutes on CPU), compresses it with
-this repo's actual HOPE implementation, and compares against random and
-magnitude-pruning baselines across 3 random seeds. See "Toy reproduction
-results" below for what a real run showed.
+## Not done (explicitly — this remains a work in progress, not a finished platform)
 
-### Real paper reproduction (needs data you have to supply)
+- **CLI unification is partial.** `cli.py` now has a `kv` command group
+  (`parse-modifier`, `benchmark`, `demo`) — but only for the network-free
+  paths, deliberately. The real-Gemma `inspect`/`--modifier`/
+  `--compare-baseline` workflow is still `python -m examples.run_gemma`
+  directly, not wrapped, because that path needs
+  torch+transformers+network access this CLI wrapper has never been run
+  against — wrapping it now would mean shipping untested code with the same
+  confident tone as everything that HAS been verified, which is exactly the
+  gap this whole project has tried not to paper over. `core.kv_modifiers`'s
+  `parse_modifier_spec` was promoted out of a private helper in
+  `run_gemma.py` into `core/kv_modifiers.py` itself, with real test
+  coverage it didn't have before, specifically so the CLI (and anything
+  else) could depend on it without duplicating it.
+- **No shared event-log format**, despite the convergent instinct noted
+  above — `StethoscopeReport` and `KVEvent`/`ExperienceDB` are structurally
+  similar but not interchangeable today.
+- **No unified debugger.** `debugger/app_streamlit.py` only visualizes
+  KV-cache events; it has no view into weight-compression's `NOTES.md`/audit
+  trail.
+- **Both subsystems' real-scale validation gaps are still open** (see the
+  table above) — none of the CLI or merge work closed either one.
 
-```bash
-pip install torchvision
-python3 scripts/reproduce_paper_resnet50.py --imagenet-val /path/to/imagenet/val
-```
-
-Requires a local ImageNet validation set in `torchvision.datasets.ImageFolder`
-layout — get this via [image-net.org](https://image-net.org)'s own
-registration process; nothing in this repo can download it for you. See
-"What's actually been validated" above for exactly what this script has and
-hasn't been checked against.
-
-## Package layout
-
-```
-hope-stethoscope/
-├── hope_core/
-│   ├── kernels.py         # self-/cross-kernel closed forms (eq. 3-5)
-│   ├── neuron.py          # NeuronBank: effective params + capacity (eq. 1, section 5)
-│   ├── costs.py            # J_prune, J_merge distortion functionals (eq. 6)
-│   ├── merge.py            # optimal parent-neuron computation (eq. 9-18) -- the hardest math
-│   ├── adapters.py         # NeuronBank <-> real nn.Linear/Conv2d+BN, round-trip tested
-│   ├── layer_state.py      # per-layer capacity/pair cache, O(N) local updates (section 10)
-│   ├── encoding_loop.py    # ProgressiveEncodingLoop: greedy cross-layer selection + audit trail
-│   ├── block_eviction.py   # residual-block identity collapse (eq. 19-20)
-│   ├── deft.py              # elasticity map, structural mask, gradient scaling (eq. 24-29)
-│   └── report.py            # StethoscopeReport: survival ranking, core/slack, baseline comparison
-├── cli.py                   # hope inspect / compress / deft-setup
-├── scripts/
-│   ├── toy_reproduction.py            # synthetic data, runs immediately, see results below
-│   └── reproduce_paper_resnet50.py    # the real Phase-0 gate -- needs your ImageNet + network access
-├── tests/                    # 78 tests -- see "What's tested"
-└── NOTES.md                  # paper-equation-to-code traceability; read this for any "why" question
-```
-
-## What's tested
-
-78 tests across 9 files, run with `pytest tests/ -v`. Categories, roughly by
-what they'd actually catch:
-
-- **Against first principles, not just the paper's text**: `test_kernels.py`
-  Monte Carlo-simulates `E[ReLU(Z)^2]` directly and checks the closed form
-  against the simulation, independent of whether the paper's formula was
-  transcribed correctly.
-- **The paper's central theoretical claim**: `test_neuron.py`'s scale-invariance
-  test directly verifies that capacity is unchanged under the raw-weight
-  rescaling that fools magnitude-based pruning — this is HOPE's whole reason
-  to exist over a magnitude baseline, and it's checked, not assumed.
-- **End-to-end numerical agreement, not just formula plumbing**:
-  `test_merge.py` checks that a computed merge parent actually approximates
-  each child individually (the paper's real objective — a rank-1 projection
-  of the pair, not sum reconstruction, a distinction that took an actual
-  debugging session to get right; see NOTES.md) and beats naive strawmen
-  (parameter averaging, reusing one child) on the paper's own distortion
-  metric.
-- **Real forward passes, not just shapes**: `test_adapters.py` round-trips
-  actual `nn.Conv2d`/`nn.Linear`+BN modules and compares logits, which is
-  what actually catches an axis-order bug in the Conv2d flatten/unflatten
-  convention (shapes alone wouldn't).
-- **Bookkeeping under mutation**: `test_layer_state.py` specifically chains
-  prune and merge actions and rebuilds from scratch to check stable-id
-  tracking didn't get confused with tensor positions after removals — this
-  class of bug (index vs. identity) doesn't show up in single-action tests.
-- **Real subprocesses**: `test_cli.py` uses Click's `CliRunner` to actually
-  invoke the CLI against saved model files, for both the Conv2d and Linear
-  code paths, including an error-path test.
-
-Two real bugs were caught and fixed by this suite during development (not
-hypothetically — this is what actually happened, recorded in more detail in
-NOTES.md): a caching bug where `LayerState` stored the final assembled
-`J_merge` instead of the layer-independent geometry behind it (pairs not
-touched by the most recent action silently went stale), and a wrong test
-oracle that assumed merging was sum-reconstruction when the paper's actual
-objective is a rank-1 projection of the pair.
-
-## Toy reproduction results
-
-A real run of `scripts/toy_reproduction.py` (3 seeds, synthetic 8-class
-image task, `TinyConvNet` with a 32-channel `conv1`), mean ± std:
-
-```
-Dense (uncompressed) accuracy: 0.8621 +/- 0.0116
-
- density |            HOPE |          random |       magnitude
---------------------------------------------------------------
-   0.844 | 0.8963+/-0.0476 | 0.8892+/-0.0255 | 0.9012+/-0.0358
-   0.688 | 0.8350+/-0.0119 | 0.8163+/-0.0411 | 0.8388+/-0.0383
-   0.531 | 0.7296+/-0.0543 | 0.6438+/-0.1027 | 0.7221+/-0.0265
-   0.375 | 0.5829+/-0.1070 | 0.5408+/-0.0313 | 0.5325+/-0.0390
-   0.250 | 0.3858+/-0.0733 | 0.4175+/-0.0776 | 0.3913+/-0.0022
-```
-
-**Honest read:** graceful, non-catastrophic degradation as density drops —
-that's a real code-correctness signal (a broken implementation is much more
-likely to produce nonsense or a cliff-edge collapse than a smooth curve).
-HOPE is roughly competitive with magnitude pruning (both usually ahead of
-random in the middle of the range) and the ordering between all three
-methods is noisy and flips at the most aggressive compression. **This is
-not evidence HOPE beats the baselines** — one 32-channel layer on a
-synthetic task, three seeds, is nowhere near enough signal for that claim,
-and it isn't what this script is for. It's here to show the implementation
-does something sane on data it's never seen, which it does.
-
-A significant, unplanned part of getting this result required adding a
-BatchNorm recalibration step after every rebuild: without it, ALL THREE
-methods (HOPE, random, magnitude alike) collapsed to near-chance accuracy
-after removing even a handful of channels, because the downstream layer's
-BN running statistics were still calibrated for the pre-pruning channel
-count. This is standard, expected behavior for structured pruning in
-general — not a HOPE-specific issue — but it's worth knowing about if you
-extend this script or write your own evaluation harness.
-
-## Known limitations
-
-Ordered roughly by how likely each is to actually bite you.
-
-1. **Cross-layer weight propagation is one-directional.** Compressing layer
-   L correctly updates layer L+1's *input*-facing weight (tested, used
-   throughout `cli.py` and both reproduction scripts). It does **not**
-   propagate layer L+1's own compression *backward* into layer L's
-   *outgoing* weight. Compressing two adjacent layers independently in the
-   same run will silently produce shape-mismatched or wrong weights for a
-   merge (a merge has no simple "which original column survived" mapping
-   the way a prune does). `scripts/toy_reproduction.py` and
-   `scripts/reproduce_paper_resnet50.py` both work around this by
-   compressing one boundary at a time, sequentially, re-extracting fresh
-   from the current model state each time — which is correct, but is not
-   the paper's single joint cross-layer greedy pass. A real fix needs an
-   explicit model-graph abstraction; see NOTES.md.
-2. **The O(N²) merge-candidate cache is a real bottleneck above ~100-200
-   neurons per layer**, confirmed empirically (not just theoretically) while
-   building the ResNet-50 script: a single ~128-channel boundary with merge
-   enabled didn't finish in 300s, while prune-only across the *entire*
-   network (32 boundaries, widths 64-512) took ~14s. `LayerState`'s
-   `build_merge_cache=False` option and the reproduction script's
-   `--merge-width-limit` are the current mitigation, not a fix. The actual
-   fix — approximate candidate generation instead of an exact all-pairs
-   scan — is identified, real follow-up work.
-3. **PH-1 activation assumption.** The exact self-/cross-kernel formulas are
-   derived for ReLU-family (positively-homogeneous-degree-1) activations.
-   GELU/SiLU/SwiGLU — what most current transformer MLPs actually use —
-   fall outside that exact guarantee. Not relevant to this repo's current
-   scope (BN + ReLU-family, matching the paper's own validated envelope),
-   but relevant if you're tempted to point this at a transformer.
-4. **Two documented, narrow simplifications in `merge.py`** where the paper
-   defers to an appendix this implementation doesn't have access to (sign
-   resolution for the optimal merge direction, and the `gamma_p^2 < eps`
-   boundary case). Both are flagged inline in the code, validated indirectly
-   (the merge optimality tests pass), and detailed in NOTES.md.
-5. **DEFT's "Dynamic Resolution of Redundancy"** (merging redundant core
-   neurons to free new plastic capacity, paper Figure 4a) is not
-   implemented — the core elasticity/mask/gradient-scaling pipeline (eq.
-   24-29) is.
+**175 tests total** as of this update (`pytest tests/ -v` from the repo root).
 
 ## Citation
 
-```
-@article{mobahi2026hope,
-  title={Hilbert Operator for Progressive Encoding (HOPE): A Mathematical Framework for Deconstructing Learned Representations in Deep Networks},
-  author={Mobahi, Hossein and Bartlett, Peter L.},
-  journal={arXiv preprint arXiv:2607.21366},
-  year={2026}
-}
-```
-
+Weight-space compression implements HOPE (arXiv:2607.21366, Mobahi &
+Bartlett, 2026) — see `docs/weight_compression.md` for the full citation.
 This implementation is unofficial and has no affiliation with the paper's
-authors. Report implementation issues against this repo, not against them.
+authors.

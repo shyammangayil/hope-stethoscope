@@ -1,10 +1,38 @@
-torch>=2.0
-numpy>=1.24
+# requirements.txt for the merged HOPE Stethoscope platform.
+#
+# Split by what each subsystem actually needs -- installing everything below
+# "core" is only required if you're touching that specific piece.
+
+# --- Core (both subsystems' tests, sandbox demos, CLI) ---
+numpy>=1.26
 scipy>=1.10
-pytest>=7.0
+matplotlib>=3.8
+pytest>=8.0
 click>=8.0
 tqdm>=4.60
-matplotlib>=3.5
 
-# Only needed for scripts/reproduce_paper_resnet50.py:
-# torchvision>=0.15
+# --- KV-cache subsystem sandbox mode (examples/run_demo.py, debugger/, most of tests/) ---
+pandas>=2.2
+scikit-learn>=1.4        # PCA (core/visualize.py falls back to manual SVD if absent)
+networkx>=3.2             # nearest-neighbor graph layout
+PyYAML>=6.0
+plotly>=5.22
+streamlit>=1.35
+
+# --- Weight-compression subsystem: torch is required throughout hope_core/ ---
+torch>=2.0
+
+# --- Real-model mode, either subsystem (NOT installed/exercised during the
+#     sandboxed build+merge -- see docs/weight_compression.md and
+#     docs/kv_cache.md for exactly what has and hasn't been run against
+#     real weights/real Gemma) ---
+# torchvision>=0.15        # scripts/reproduce_paper_resnet50.py
+# transformers              # examples/run_gemma.py -- confirmed working against
+# accelerate                #   real google/gemma-3-4b-it on 2026-07-29, see CHANGELOG.md
+# bitsandbytes>=0.43        # real fp8/int4 kernels (compression/plugins.py numpy
+#                            #  versions are reference implementations of the same algorithms)
+# lm-eval>=0.4               # for evaluate_accuracy against real ARC/HellaSwag
+# umap-learn>=0.5            # optional: core/visualize.py's UMAP projection (else falls back to PCA)
+# gepa                       # optional: real reflective-mutation optimizer -- see
+#                             #  integrations/gepa_adapter.py's module docstring; not required,
+#                             #  the adapter's rule-based suggest_prompt_update() has no dependency on it.

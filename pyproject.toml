@@ -4,22 +4,29 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hope-stethoscope"
-version = "0.1.0"
-description = "Unofficial implementation of HOPE (arXiv:2607.21366) — Hilbert-operator neuron compression and DEFT fine-tuning"
+version = "0.2.0"
+description = "HOPE Stethoscope: weight-space compression (arXiv:2607.21366) + KV-cache introspection for neural networks"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "torch>=2.0",
-    "numpy>=1.24",
+    "numpy>=1.26",
     "scipy>=1.10",
     "click>=8.0",
     "tqdm>=4.60",
-    "matplotlib>=3.5",
+    "matplotlib>=3.8",
+    "pandas>=2.2",
+    "scikit-learn>=1.4",
+    "networkx>=3.2",
+    "PyYAML>=6.0",
+    "plotly>=5.22",
+    "streamlit>=1.35",
 ]
 
 [project.optional-dependencies]
 resnet50 = ["torchvision>=0.15"]
-dev = ["pytest>=7.0"]
+gemma = ["transformers", "accelerate"]
+dev = ["pytest>=8.0"]
 
 [project.scripts]
 hope = "cli:cli"
@@ -28,4 +35,5 @@ hope = "cli:cli"
 py-modules = ["cli"]
 
 [tool.setuptools.packages.find]
-include = ["hope_core*"]
+include = ["hope_core*", "core*", "compression*", "harness*", "integrations*"]
+
