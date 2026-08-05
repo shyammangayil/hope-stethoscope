@@ -278,3 +278,65 @@ def test_kv_demo_runs_end_to_end_through_cli():
     assert result.exit_code == 0, result.output
     assert "SUCCESS CRITERIA" in result.output
     assert "DONE" in result.output
+
+
+def test_example_model_loads_correctly_across_separate_processes():
+    """Regression test for a real bug, found by a person actually running
+    this on their own machine rather than by any test in this file until
+    now: torch.save(model, path) pickles a module+class-name REFERENCE, not
+    the class body. An earlier version of examples/make_example_model.py
+    defined its model class inline in the same script that called
+    torch.save() -- which worked fine under CliRunner (everything runs in
+    one process, one module registry, so pickle's lookup always succeeds)
+    but failed the moment someone ran the save step and the CLI's load step
+    as two genuinely separate `python3` invocations, because pickle then
+    looks for the class in a DIFFERENT __main__ than the one that saved it.
+    CliRunner cannot catch this class of bug by construction; this test
+    uses real subprocesses specifically because of that.
+    """
+    import subprocess
+    import sys
+
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with tempfile.TemporaryDirectory() as tmp:
+        make_result = subprocess.run(
+            [sys.executable, os.path.join(repo_root, "examples", "make_example_model.py")],
+            cwd=tmp, capture_output=True, text=True, timeout=60,
+        )
+        assert make_result.returncode == 0, make_result.stderr
+        assert os.path.exists(os.path.join(tmp, "model.pt"))
+        assert os.path.exists(os.path.join(tmp, "layer.json"))
+
+        inspect_result = subprocess.run(
+            [sys.executable, os.path.join(repo_root, "cli.py"), "inspect", "model.pt",
+             "--layer-config", "layer.json", "--target-density", "0.5", "--report-dir", "out"],
+            cwd=tmp, capture_output=True, text=True, timeout=60,
+        )
+        assert inspect_result.returncode == 0, inspect_result.stderr
+        assert os.path.exists(os.path.join(tmp, "out", "report.json"))
+
+        compress_result = subprocess.run(
+            [sys.executable, os.path.join(repo_root, "cli.py"), "compress", "model.pt",
+             "--layer-config", "layer.json", "--target-density", "0.5", "--out", "compressed.pt"],
+            cwd=tmp, capture_output=True, text=True, timeout=60,
+        )
+        assert compress_result.returncode == 0, compress_result.stderr
+
+        # The compressed model's pickle still references
+        # examples.example_model_def.ExampleModel for the outer object (only
+        # fc1/bn1 were swapped for fresh standard nn.Linear/BatchNorm1d,
+        # which pickle fine anywhere -- but ExampleModel itself needs this
+        # repo's root importable). cli.py/make_example_model.py both handle
+        # this themselves via sys.path.insert; a bare `python -c` doesn't,
+        # which is realistic -- so this sets PYTHONPATH explicitly, matching
+        # what README.md now tells a real user to do for their own
+        # load-later scripts, rather than silently special-casing the test.
+        load_check = subprocess.run(
+            [sys.executable, "-c",
+             "import torch; m = torch.load('compressed.pt', weights_only=False); "
+             "print(m.fc1.out_features)"],
+            cwd=tmp, capture_output=True, text=True, timeout=30,
+            env={**os.environ, "PYTHONPATH": repo_root},
+        )
+        assert load_check.returncode == 0, load_check.stderr
+        assert int(load_check.stdout.strip()) < 16  # compressed below the original 16 neurons

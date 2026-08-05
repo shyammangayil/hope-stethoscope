@@ -109,8 +109,17 @@ python3 -m pytest tests/ -v   # expect 175 passed
 for the full CLI/API reference:
 ```bash
 python3 examples/quickstart.py
+
+# Try the CLI hands-on with a real example model (no model of your own needed yet):
+python3 examples/make_example_model.py
 python3 cli.py inspect model.pt --layer-config layer.json --target-density 0.5 --report-dir out/
 ```
+**Before pointing this at your own model**: `torch.save(model, path)` needs
+the whole object (not a state dict), *and* your model class needs to live
+in its own importable module, not defined inline in the script that calls
+`torch.save()` — see `docs/weight_compression.md`'s CLI section for why
+(a real bug, found by running this on a second machine) and a working
+pattern to copy (`examples/example_model_def.py`).
 
 **KV-cache introspection** — see [`docs/kv_cache.md`](docs/kv_cache.md) for
 the full command reference, modifier syntax, and debugger instructions.

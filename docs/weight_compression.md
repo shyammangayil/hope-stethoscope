@@ -81,28 +81,50 @@ new_linear, new_bn, new_next_weight = apply_bank_to_linear_bn(state.bank, linear
 ### CLI
 
 ```bash
-# 1. Save a full model object (not just a state_dict) so the CLI can load it directly:
-python3 -c "
-import torch
-from my_model import MyModel
-m = MyModel(); m.load_state_dict(torch.load('weights.pt')); torch.save(m, 'model.pt')
-"
-
-# 2. Describe the one compressible layer you're targeting:
-cat > layer.json << 'EOF'
-{"kind": "linear", "linear_name": "fc1", "bn_name": "bn1", "next_linear_name": "fc2"}
-EOF
-
-# 3. Inspect (no model saved, just a report):
+# Try it hands-on first with a real, working example (no model of your own needed yet):
+python3 examples/make_example_model.py
 python3 cli.py inspect model.pt --layer-config layer.json --target-density 0.5 --report-dir out/
-
-# 4. Actually compress and save:
 python3 cli.py compress model.pt --layer-config layer.json --target-density 0.5 \
     --out compressed.pt --mask-out core_mask.json
 
-# 5. DEFT: compute a core/slack elasticity map (wiring it into a training loop is on you --
-#    see hope_core/deft.py's structural_mask/scale_gradient_/register_deft_gradient_hooks):
+# DEFT: compute a core/slack elasticity map (wiring it into a training loop is on you --
+# see hope_core/deft.py's structural_mask/scale_gradient_/register_deft_gradient_hooks):
 python3 cli.py deft-setup model.pt --layer-config layer.json --percentile 70 --out elasticity.json
+```
+
+**Before pointing this at your own model**, two things `torch.save(model, path)`
+requires that aren't obvious from the command above (both found by actually
+running this on a second machine, not guessed at):
+
+1. **Save the whole model object**, not a state dict —
+   `torch.save(model, path)`, not `torch.save(model.state_dict(), path)` —
+   since the CLI has no way to construct your model class from weights alone.
+2. **Your model class must live in its own importable module** (e.g.
+   `my_project/models.py`), not defined inline in whatever script calls
+   `torch.save()`. `torch.save` pickles a *reference* to the class (its
+   module + name), not the class body — if the class were defined in a
+   script run directly (`python my_script.py`), pickling records it as
+   belonging to `__main__`, which means nothing when a *different* script
+   (`cli.py`) tries to load it later. Same requirement applies later if you
+   write your own script to load a `compress`ed model back:  run it from
+   wherever your model's module is importable (e.g. your repo's root, or
+   with that root on `PYTHONPATH`).
+
+`examples/example_model_def.py` / `examples/make_example_model.py` show
+this pattern correctly, and are exactly what hit this bug during testing,
+so treat them as a working reference for structuring your own model-saving
+script, not just a demo:
+
+```bash
+python3 -c "
+import torch
+from my_project.models import MyModel     # <- your own importable module
+m = MyModel(); m.load_state_dict(torch.load('weights.pt')); torch.save(m, 'model.pt')
+"
+cat > layer.json << 'EOF'
+{"kind": "linear", "linear_name": "fc1", "bn_name": "bn1", "next_linear_name": "fc2"}
+EOF
+python3 cli.py inspect model.pt --layer-config layer.json --target-density 0.5 --report-dir out/
 ```
 
 Full command reference and the `layer.json` schema (including the `"kind":

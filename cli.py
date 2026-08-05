@@ -14,7 +14,18 @@ model, not a merely-suboptimal one).
 
 Models must be saved as a full object (`torch.save(model, path)`, not
 `torch.save(model.state_dict(), path)`), since this CLI has no way to
-construct an arbitrary model class from a state dict alone.
+construct an arbitrary model class from a state dict alone. Beyond that,
+your model class must live in its own importable module (e.g.
+`my_project/models.py`), not be defined inline in whatever script calls
+`torch.save()` -- torch.save pickles a *reference* to the class (its
+module + name), not the class body, so a class defined in a directly-run
+script gets recorded as belonging to `__main__`, which won't resolve when
+a *different* script (this CLI) tries to load it later. This is an
+inherent property of Python pickling, not something this CLI can paper
+over. Run `python3 examples/make_example_model.py` for a working example
+of the correct pattern (and see `examples/example_model_def.py`'s
+docstring) before troubleshooting your own model against it -- this exact
+mistake was made and caught once already while building this CLI.
 
 Commands:
     hope inspect  MODEL.pt --layer-config layer.json --target-density 0.5 --report-dir out/
