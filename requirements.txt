@@ -22,13 +22,24 @@ streamlit>=1.35
 # --- Weight-compression subsystem: torch is required throughout hope_core/ ---
 torch>=2.0
 
-# --- Real-model mode, either subsystem (NOT installed/exercised during the
-#     sandboxed build+merge -- see docs/weight_compression.md and
+# --- transformers: powers tests/test_real_gemma3_offline.py (a REAL, tiny,
+#     randomly-initialized Gemma3ForCausalLM constructed with no network
+#     access -- not the actual pretrained 4B checkpoint, but the authentic
+#     model class/generate()/cache mechanics). Install this to get that
+#     coverage; the rest of the suite runs fine without it (skipped via
+#     pytest.importorskip if absent). Needed for real-model use via
+#     `hope kv gemma` / examples/run_gemma.py too, which additionally needs
+#     network access this was never able to test end-to-end from here.
+transformers>=4.50
+
+# --- Real pretrained-weight mode, either subsystem (network access this
+#     was built without -- see docs/weight_compression.md and
 #     docs/kv_cache.md for exactly what has and hasn't been run against
 #     real weights/real Gemma) ---
 # torchvision>=0.15        # scripts/reproduce_paper_resnet50.py
-# transformers              # examples/run_gemma.py -- confirmed working against
-# accelerate                #   real google/gemma-3-4b-it on 2026-07-29, see CHANGELOG.md
+# accelerate                # examples/run_gemma.py against a real checkpoint --
+                             #   confirmed working against real google/gemma-3-4b-it
+                             #   on 2026-07-29, see CHANGELOG.md
 # bitsandbytes>=0.43        # real fp8/int4 kernels (compression/plugins.py numpy
 #                            #  versions are reference implementations of the same algorithms)
 # lm-eval>=0.4               # for evaluate_accuracy against real ARC/HellaSwag

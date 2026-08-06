@@ -269,6 +269,62 @@ def test_kv_benchmark_against_real_npy_file():
         assert "synthetic" not in result.output  # should report using the real file, not synthetic data
 
 
+def test_kv_gemma_passthrough_forwards_arguments_unmodified():
+    """Confirms this is a genuine passthrough (same error, same exit code as
+    invoking examples/run_gemma.py directly) rather than a reimplementation
+    that could silently drift from it.
+
+    Uses an unrecognized argument, not a missing one -- --model turned out
+    to have a default (google/gemma-3-270m-it) during the first version of
+    this test, which meant omitting it didn't fail at argparse at all: it
+    sailed past argument parsing and attempted a REAL network call, which
+    failed loudly (403 from the egress proxy) rather than the clean
+    argparse error this test actually wants. An unrecognized flag fails in
+    argparse before any of that runs, network-free, deterministic.
+
+    Uses subprocess directly rather than CliRunner: CliRunner captures
+    output by patching sys.stdout at the Python level, which doesn't see
+    anything printed by a genuinely separate OS process spawned via
+    subprocess.run() -- exactly what `hope kv gemma` does. That's invisible
+    to a real terminal user (subprocess inherits the terminal's real file
+    descriptors directly), but it does mean CliRunner is structurally the
+    wrong tool to verify this command's output, found by this test
+    initially failing against real content that was, per pytest's own
+    "Captured stdout call" section, genuinely being printed.
+    """
+    import subprocess
+    import sys as _sys
+
+    repo_root = os.path.dirname(os.path.abspath(__file__))
+    repo_root = os.path.dirname(repo_root)
+    result = subprocess.run(
+        [_sys.executable, os.path.join(repo_root, "cli.py"), "kv", "gemma", "--this-flag-does-not-exist"],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode != 0
+    assert "unrecognized" in (result.stdout + result.stderr).lower()
+
+
+def test_kv_gemma_help_forwards_to_run_gemma_argparse_help():
+    """--help must forward to run_gemma.py's REAL argument list, not
+    Click's generic wrapper text -- add_help_option=False on the command is
+    what makes that happen; this is the regression test for it. Real
+    subprocess for the same reason as the test above."""
+    import subprocess
+    import sys as _sys
+
+    repo_root = os.path.dirname(os.path.abspath(__file__))
+    repo_root = os.path.dirname(repo_root)
+    result = subprocess.run(
+        [_sys.executable, os.path.join(repo_root, "cli.py"), "kv", "gemma", "--help"],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 0
+    assert "--modifier" in result.stdout
+    assert "--compare-baseline" in result.stdout
+    assert "--cross-check" in result.stdout
+
+
 def test_kv_demo_runs_end_to_end_through_cli():
     """Slower (full pipeline), but this is the one test that would catch the
     CLI wrapper itself breaking something run_demo.py's own execution

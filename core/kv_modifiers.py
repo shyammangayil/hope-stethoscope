@@ -60,7 +60,23 @@ def _randn_like(x, rng: Optional[np.random.Generator] = None):
 
 class KVModifier(ABC):
     """Base class for live KV interventions. `name` shows up in
-    `MutationDB` records (core/storage.py) -- override it per subclass."""
+    `MutationDB` records (core/storage.py) -- override it per subclass.
+
+    IMPORTANT about layer_indices scoping (every subclass below has this
+    parameter): it controls which layer's cache.update() call modify() gets
+    INVOKED for -- it is NOT a guarantee that other layers' cached values
+    will match an unmodified run. During prefill (and any forward pass that
+    writes new cache entries), a layer's cache.update() return value is
+    what that layer's OWN attention computation actually uses, not just
+    what gets stored for later -- so a modification at layer L changes
+    layer L's hidden-state output within that same forward pass, which is
+    layer L+1's input, and so on. Scoping a modifier to layer_indices=[0]
+    will still visibly change layers 1, 2, 3... during that forward pass;
+    that's expected causal behavior, not a scoping bug. Confirmed against a
+    real (if tiny) Gemma3 model in
+    tests/test_real_gemma3_offline.py::test_layer0_modification_causally_cascades_to_later_layers,
+    after an earlier version of that test asserted the opposite and failed.
+    """
     name: str = "base"
 
     @abstractmethod
@@ -71,7 +87,8 @@ class KVModifier(ABC):
 
     def applies_to_layer(self, layer_idx: int) -> bool:
         """Override to scope to specific layers; base class applies
-        everywhere CacheTap's wrapped cache has a layer."""
+        everywhere CacheTap's wrapped cache has a layer. See this class's
+        own docstring for what this scoping does and doesn't guarantee."""
         return True
 
     def describe(self) -> dict:

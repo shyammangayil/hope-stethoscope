@@ -250,12 +250,10 @@ def kv():
 
     Deliberately a separate command group, not folded into the top-level
     commands above -- see README.md's "shared infrastructure, not shared
-    algorithms" principle. Only network-free operations are wrapped here so
-    far (parse-modifier, benchmark, demo); the full real-Gemma
-    inspect/modify/--compare-baseline workflow is still
-    `python -m examples.run_gemma` directly, since that path needs
-    torch+transformers+network access this CLI wrapper hasn't been
-    exercised against. See docs/kv_cache.md.
+    algorithms" principle. parse-modifier/benchmark/demo are fully
+    reimplemented here against tested library code; gemma is a thin,
+    verified byte-identical passthrough to `examples/run_gemma.py` rather
+    than a reimplementation -- see that command's own docstring for why.
     """
 
 
@@ -321,6 +319,37 @@ def kv_benchmark(npy, plugins, seed, out):
         with open(out, "w") as f:
             json.dump(results, f, indent=2)
         click.echo(f"\nResults written to {out}")
+
+
+@kv.command(name="gemma", context_settings={"ignore_unknown_options": True}, add_help_option=False)
+@click.argument("gemma_args", nargs=-1, type=click.UNPROCESSED)
+def kv_gemma(gemma_args):
+    """Real-model KV inspection/modification against a HuggingFace model
+    (needs torch+transformers+network access). Thin passthrough to
+    examples/run_gemma.py for discoverability -- deliberately NOT a
+    reimplementation. That script's ~400 lines of tightly-sequential logic
+    (model loading, cache setup, generation, --compare-baseline,
+    --cross-check) are confirmed working against real google/gemma-3-4b-it
+    (see CHANGELOG.md), and refactoring them into something wrappable here
+    would mean changing tested code without being able to re-verify the one
+    part that actually matters -- the network-dependent path this CLI has
+    no access to. See tests/test_real_gemma3_offline.py for what IS
+    independently verified about the underlying mechanics (CacheTap,
+    modifiers, generate() integration) without touching this script.
+
+    All arguments after `gemma` are forwarded as-is, e.g.:
+        hope kv gemma --model google/gemma-3-4b-it --prompt "..." --modifier "zero:token_positions=0"
+    is exactly:
+        python -m examples.run_gemma --model google/gemma-3-4b-it --prompt "..." --modifier "zero:token_positions=0"
+    """
+    import subprocess
+
+    repo_root = Path(__file__).resolve().parent
+    result = subprocess.run(
+        [sys.executable, "-m", "examples.run_gemma", *gemma_args],
+        cwd=repo_root,
+    )
+    sys.exit(result.returncode)
 
 
 @kv.command(name="demo")

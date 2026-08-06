@@ -41,9 +41,9 @@ confirmed at the scale that would make either one's own paper/claims stick:
 | Subsystem | What's independently verified | What's still open |
 |---|---|---|
 | Weight compression | 78 tests incl. a Monte Carlo check of the self-kernel formula against its own definition, and an end-to-end merge-optimality check against naive baselines. Toy reproduction (synthetic data) runs and shows sane, graceful degradation. | The paper's own ResNet-50/ImageNet numbers — needs real ImageNet + real pretrained weights, neither reachable from the sandbox this was built in. `scripts/reproduce_paper_resnet50.py` is written and structurally verified against the real ResNet-50 architecture, but never run against real data. |
-| KV-cache introspection | 80 tests. Full demo pipeline (`examples/run_demo.py`) re-run fresh in this session, including a real, un-hidden failing criterion (`hook_and_inspector_overhead_under_10pct`, measured +92% overhead) and a real infrastructure-unavailable guard firing correctly instead of fabricating a perplexity number. Confirmed (per `CHANGELOG.md`) working against real `google/gemma-3-4b-it` on 2026-07-29 for cache observation. | The causal-editing path (`--modifier ... --compare-baseline`) against real Gemma — status as of this merge is "some manual runs happened, not yet captured as a repeatable, checked-in result." The `hook_and_inspector_overhead_under_10pct` failure itself is real and unresolved, not cosmetic — worth understanding before relying on this for anything latency-sensitive. |
+| KV-cache introspection | 96 tests (was 80). Full demo pipeline (`examples/run_demo.py`) re-run fresh in this session, including a real, un-hidden failing criterion (`hook_and_inspector_overhead_under_10pct`, measured +92% overhead) and a real infrastructure-unavailable guard firing correctly instead of fabricating a perplexity number. Confirmed (per `CHANGELOG.md`) working against real `google/gemma-3-4b-it` on 2026-07-29 for cache observation. **New**: `tests/test_real_gemma3_offline.py` constructs a REAL (tiny, untrained) `transformers.Gemma3ForCausalLM` with no network access at all, and runs the actual `CacheTap` → `generate()` → modifier → inspector pipeline against it — confirming the mechanics (not just the interface) against the authentic model class and its real heterogeneous sliding-window/global cache pattern, across 4 of the 7 modifier types. | The causal-editing path against the real *pretrained* Gemma checkpoint specifically (tokenizer, real weights, `--compare-baseline`) — still "some manual runs happened, not yet a repeatable, checked-in result" against real weights, though the underlying mechanics it depends on are now much more thoroughly verified than before. The `hook_and_inspector_overhead_under_10pct` failure is real and unresolved. |
 
-**158 tests passed as of the initial merge, 175 as of the CLI update below** (`pytest tests/ -v`
+**158 tests at the initial merge, 175 after the CLI update, 187 as of the real-Gemma3-offline work below.**
 from the repo root) — the two suites were run independently before the merge
 and once more together immediately after, specifically to catch any
 import-path breakage from moving files around. None found.
@@ -82,7 +82,7 @@ hope-stethoscope/
 ├── scripts/                # weight-space toy + real (ResNet-50) reproduction
 ├── examples/                # BOTH: quickstart.py (weights), run_demo.py /
 │                            #   run_gemma.py / run_mutation_demo.py (KV cache)
-├── tests/                   # BOTH subsystems' tests, 175 total
+├── tests/                   # BOTH subsystems' tests, 187 total
 ├── docs/
 │   ├── weight_compression.md   # full README for hope_core (was the top-level README)
 │   └── kv_cache.md              # full README for the KV-cache subsystem
@@ -100,7 +100,7 @@ pip install -r requirements.txt
 # what that unlocks and what it doesn't):
 #   pip install torchvision                      # weight-space real repro
 #   pip install transformers accelerate           # KV-cache real Gemma
-python3 -m pytest tests/ -v   # expect 175 passed
+python3 -m pytest tests/ -v   # expect 187 passed
 ```
 
 ## Quick start
@@ -130,25 +130,36 @@ python3 cli.py kv demo                                   # full synthetic-model 
 python3 cli.py kv parse-modifier "zero:token_positions=0,4"   # validate a modifier spec before a slow real run
 python3 cli.py kv benchmark --plugins fp8,int4            # compression benchmark table, synthetic or --npy data
 
-python3 -m examples.run_gemma --model google/gemma-3-4b-it --prompt "..." --max-new-tokens 5   # real model, not yet CLI-wrapped
+python3 -m examples.run_gemma --model google/gemma-3-4b-it --prompt "..." --max-new-tokens 5   # real model, or:
+python3 cli.py kv gemma --model google/gemma-3-4b-it --prompt "..." --max-new-tokens 5          # identical, thin CLI passthrough
 streamlit run debugger/app_streamlit.py
 ```
+`hope kv gemma` forwards every argument to `run_gemma.py` unchanged (verified
+byte-identical output) — it exists purely for discoverability under one
+entry point, not as a reimplementation. See `docs/kv_cache.md` for the full
+`--modifier` syntax, and `tests/test_real_gemma3_offline.py` for what's
+independently verified about the underlying mechanics without needing
+network access.
 
 ## Not done (explicitly — this remains a work in progress, not a finished platform)
 
-- **CLI unification is partial.** `cli.py` now has a `kv` command group
-  (`parse-modifier`, `benchmark`, `demo`) — but only for the network-free
-  paths, deliberately. The real-Gemma `inspect`/`--modifier`/
-  `--compare-baseline` workflow is still `python -m examples.run_gemma`
-  directly, not wrapped, because that path needs
-  torch+transformers+network access this CLI wrapper has never been run
-  against — wrapping it now would mean shipping untested code with the same
-  confident tone as everything that HAS been verified, which is exactly the
-  gap this whole project has tried not to paper over. `core.kv_modifiers`'s
-  `parse_modifier_spec` was promoted out of a private helper in
-  `run_gemma.py` into `core/kv_modifiers.py` itself, with real test
-  coverage it didn't have before, specifically so the CLI (and anything
-  else) could depend on it without duplicating it.
+- **CLI unification is now close to complete, with one deliberate exception.**
+  `cli.py`'s `kv` group has `parse-modifier`, `benchmark`, `demo` (fully
+  reimplemented against tested library code) and `gemma` (a thin, verified
+  byte-identical passthrough to `examples/run_gemma.py` — not a
+  reimplementation, on purpose: that script's ~400 lines of tightly-
+  sequential real-model logic are confirmed working against real
+  `google/gemma-3-4b-it`, and refactoring them into something wrappable
+  here would mean changing tested code without being able to re-verify the
+  one part that actually matters — the network-dependent path this CLI has
+  no access to). `core.kv_modifiers.parse_modifier_spec` was promoted out
+  of a private helper in `run_gemma.py` into `core/kv_modifiers.py` itself,
+  with real test coverage it didn't have before. Separately,
+  `tests/test_real_gemma3_offline.py` substantially de-risked the
+  mechanics `run_gemma.py` depends on (see the validation table above) by
+  testing them against a real, tiny, offline-constructible
+  `Gemma3ForCausalLM` — without needing to touch `run_gemma.py`'s own code
+  at all.
 - **No shared event-log format**, despite the convergent instinct noted
   above — `StethoscopeReport` and `KVEvent`/`ExperienceDB` are structurally
   similar but not interchangeable today.
@@ -158,7 +169,19 @@ streamlit run debugger/app_streamlit.py
 - **Both subsystems' real-scale validation gaps are still open** (see the
   table above) — none of the CLI or merge work closed either one.
 
-**175 tests total** as of this update (`pytest tests/ -v` from the repo root).
+**187 tests total** as of this update (`pytest tests/ -v` from the repo root).
+
+Also as of this update: `tests/test_real_gemma3_offline.py` (see the
+validation table above), and an important, non-obvious finding it surfaced
+about `layer_indices` scoping -- a modifier scoped to one layer still
+visibly changes LATER layers' cached values within the same forward pass,
+because an earlier layer's modified cache write changes that layer's own
+hidden-state output, which is the next layer's input. That's expected causal
+behavior, not a scoping bug -- documented in `KVModifier`'s own docstring
+(`core/kv_modifiers.py`) since it's the kind of thing anyone running live
+modifier experiments (e.g. via `hope kv gemma` / `examples/run_gemma.py`)
+could reasonably assume works the other way, the way an earlier version of
+this repo's own test suite briefly did.
 
 ## Citation
 
