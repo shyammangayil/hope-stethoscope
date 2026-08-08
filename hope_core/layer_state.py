@@ -215,6 +215,80 @@ class LayerState:
         for k in stale:
             del self._pair_geometry[k]
 
+    def resync_downstream_consumer(self, downstream_w_raw: torch.Tensor) -> None:
+        """Call after the layer this one feeds INTO (its downstream
+        consumer) changes its own neuron set via prune/merge. Fixes the
+        cross-layer weight propagation gap documented in NOTES.md and
+        README.md's former "Not done" list.
+
+        Why this is correct for both prune and merge on the downstream
+        side, with no special-casing needed: this layer's w_out is not an
+        independent quantity, it's literally the downstream layer's raw
+        incoming weight, transposed (see adapters.py's extract_*_bn_bank).
+        The downstream layer's OWN w_raw, after either a prune or a merge,
+        already correctly encodes "how do my current neurons read from
+        this (unchanged) layer's output space" -- merge.py's machinery
+        computes a new row that's valid across the full upstream output
+        space by construction (eq. 16-18 operate in the same w_eff_in
+        space regardless of what layer is asking). So the fix is just:
+        re-derive w_out fresh from the downstream layer's current w_raw,
+        transposed, whenever it changes.
+
+        capacity and e_active are always refreshed (cheap, O(N)). The
+        pair-geometry cache is only refreshed if build_merge_cache is (and
+        was) True -- resyncing must not silently force the O(N^2) cache
+        build for a layer that was specifically configured to avoid it
+        (e.g. DEFT's collect_prune_cost_distribution, or a layer above
+        reproduce_paper_resnet50.py's --merge-width-limit).
+        """
+        new_w_out = downstream_w_raw.T.clone()
+        if new_w_out.shape[0] != self.bank.n_neurons:
+            raise ValueError(
+                f"{self.name}: downstream w_raw has {new_w_out.shape[0]} rows, "
+                f"expected {self.bank.n_neurons} (this layer's current neuron count)"
+            )
+        self.bank = self.bank.with_replaced_w_out(new_w_out)
+        self.capacities = self.bank.capacity()
+        self.e_active = self.capacities.sum()
+        if self.build_merge_cache:
+            self.refresh_all()
+
+    def resync_upstream_provider(self, upstream_w_out: torch.Tensor) -> None:
+        """The mirror of resync_downstream_consumer, for the OTHER
+        direction: call after the layer THIS one reads FROM (its upstream
+        provider) changes its own neuron set via prune/merge.
+
+        This direction matters during the live loop, not just at final
+        rebuild -- found by a real test failure, not anticipated in
+        advance. self_kernel/capacity don't depend on w_raw's shape or
+        values (only gamma/beta), so a stale upstream-facing w_raw doesn't
+        corrupt THIS layer's own capacity numbers. But merge.py's direction-
+        finding (compute_optimal_parent) uses effective_input(), which DOES
+        read w_raw's actual values via cosine similarity between this
+        layer's own neurons -- if this layer's w_raw still has columns (or
+        wrong values in existing columns) for upstream neurons that were
+        pruned or merged away, this layer's OWN internal merge candidate
+        selection silently corrupts, not just the eventual rebuild shape.
+
+        upstream_w_out should be the upstream LayerState's CURRENT
+        bank.w_out (kept correct via ITS OWN resync_downstream_consumer
+        calls) -- transposing it gives exactly this layer's correct new
+        w_raw, by the same "w_out and w_raw are transposes of each other
+        across a layer boundary" relationship resync_downstream_consumer's
+        docstring describes.
+        """
+        new_w_raw = upstream_w_out.T.clone()
+        if new_w_raw.shape[0] != self.bank.n_neurons:
+            raise ValueError(
+                f"{self.name}: upstream_w_out.T has {new_w_raw.shape[0]} rows, "
+                f"expected {self.bank.n_neurons} (this layer's current neuron count)"
+            )
+        self.bank = self.bank.with_replaced_w_raw(new_w_raw)
+        self.capacities = self.bank.capacity()  # unchanged in practice (doesn't depend on w_raw), refreshed for safety
+        self.e_active = self.capacities.sum()
+        if self.build_merge_cache:
+            self.refresh_all()  # pair geometry DOES depend on w_raw's values via effective_input()
+
     def refresh_all(self) -> None:
         """Full O(N^2) recompute of every cached pair's geometry against the
         current bank state.

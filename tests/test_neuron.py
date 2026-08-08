@@ -8,6 +8,7 @@ proposition over magnitude/BN-scale baselines is broken for this
 implementation, regardless of what everything else in the repo says.
 """
 
+import pytest
 import torch
 
 from hope_core.neuron import NeuronBank
@@ -130,3 +131,30 @@ def test_clone_is_independent():
     cloned = bank.clone()
     cloned.w_raw[0, 0] = 999.0
     assert bank.w_raw[0, 0] != 999.0
+
+
+def test_with_replaced_w_out_updates_capacity_correctly():
+    bank = _toy_bank(n=4, d_out=3, seed=9)
+    original_capacity = bank.capacity().clone()
+
+    new_w_out = torch.ones(4, 5) * 2.0  # different shape (d_out 3->5) and different values
+    updated = bank.with_replaced_w_out(new_w_out)
+
+    assert updated.w_out.shape == (4, 5)
+    assert not torch.allclose(updated.capacity(), original_capacity), "capacity must reflect the new w_out"
+    # self-kernel (depends only on gamma/beta, not w_out) must be unchanged
+    assert torch.allclose(updated.self_kernel(), bank.self_kernel())
+
+
+def test_with_replaced_w_out_does_not_mutate_original():
+    bank = _toy_bank(n=3, seed=10)
+    original_w_out = bank.w_out.clone()
+    new_w_out = torch.zeros(3, 4)
+    bank.with_replaced_w_out(new_w_out)
+    assert torch.allclose(bank.w_out, original_w_out), "original bank must be untouched"
+
+
+def test_with_replaced_w_out_wrong_row_count_raises():
+    bank = _toy_bank(n=4, seed=11)
+    with pytest.raises(ValueError, match="n_neurons"):
+        bank.with_replaced_w_out(torch.zeros(3, 5))  # 3 rows, bank has 4 neurons

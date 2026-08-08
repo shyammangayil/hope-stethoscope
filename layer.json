@@ -1,0 +1,6 @@
+{
+  "kind": "linear",
+  "linear_name": "fc1",
+  "bn_name": "bn1",
+  "next_linear_name": "fc2"
+}

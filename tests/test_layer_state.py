@@ -8,6 +8,7 @@ from-scratch one. This is the only way to catch a stable-id/position mixup
 that happens to still produce a *plausible-looking* (but wrong) cache.
 """
 
+import pytest
 import torch
 
 from hope_core.layer_state import LayerState
@@ -168,6 +169,9 @@ def test_build_merge_cache_false_is_faster_than_default_for_larger_layers():
     full_time = time.perf_counter() - t0
 
     assert fast_time < full_time / 3, f"expected a clear speedup: fast={fast_time:.4f}s full={full_time:.4f}s"
+
+
+def test_merge_then_prune_the_new_parent_does_not_crash():
     """Regression-style test for a specific edge case: immediately acting on
     a just-created parent (rather than an original neuron) exercises the
     'new_id' bookkeeping path end-to-end."""
@@ -181,3 +185,173 @@ def test_build_merge_cache_false_is_faster_than_default_for_larger_layers():
     assert new_id not in state.ids
     assert state.n_active() == 4
     assert torch.allclose(state.capacities, state.bank.capacity(), atol=1e-5)
+
+
+# ---------------------------------------------------------------------------
+# resync_downstream_consumer -- fixes the cross-layer weight propagation gap
+# documented in NOTES.md and (formerly) README.md's "Not done" list: this
+# layer's w_out is the downstream layer's raw weight, transposed, and goes
+# stale the moment the downstream layer's own neuron set changes.
+#
+# Dimensional convention used throughout: for a real chain upstream -> downstream,
+# downstream's fan-in (d_in) MUST equal upstream's neuron count, since
+# downstream's raw weight reads directly from upstream's output. An earlier
+# version of these tests used arbitrary, inconsistent fan-in values for the
+# simulated downstream banks, which resync's own shape validation correctly
+# rejected -- a real bug in the test fixtures, not in resync itself. Fixed
+# by deriving downstream bank shapes FROM upstream's actual neuron count.
+# ---------------------------------------------------------------------------
+
+
+def _chained_upstream_downstream(upstream_n=5, downstream_n=6, downstream_d_out=3, seed=30):
+    """A realistic upstream/downstream pair: downstream's fan-in equals
+    upstream's neuron count, matching how extract_*_bn_bank actually
+    constructs these from a real chained nn.Module."""
+    upstream = LayerState(bank=_random_bank(n=upstream_n, d_out=downstream_n, seed=seed), delta_p_init=10.0, name="upstream")
+    downstream_bank = _random_bank(n=downstream_n, d_in=upstream_n, d_out=downstream_d_out, seed=seed + 1)
+    downstream = LayerState(bank=downstream_bank, delta_p_init=10.0, name="downstream")
+    return upstream, downstream
+
+
+def test_resync_after_downstream_prune_updates_w_out_shape_and_capacity():
+    upstream, downstream = _chained_upstream_downstream(upstream_n=5, downstream_n=6, seed=30)
+    original_capacities = upstream.capacities.clone()
+
+    victim_id, _ = downstream.best_prune()
+    downstream.apply_prune(victim_id)
+    assert downstream.n_active() == 5
+
+    upstream.resync_downstream_consumer(downstream.bank.w_raw)
+
+    assert upstream.bank.w_out.shape == (5, 5)  # (upstream_n=5, downstream_new_n=5)
+    assert torch.allclose(upstream.bank.w_out, downstream.bank.w_raw.T)
+    assert not torch.allclose(upstream.capacities, original_capacities), "capacities must reflect the resync"
+    assert torch.allclose(upstream.capacities, upstream.bank.capacity()), "cached capacities must match a fresh recompute"
+
+
+def test_resync_refreshes_pair_geometry_cache_when_enabled():
+    upstream, downstream = _chained_upstream_downstream(upstream_n=5, downstream_n=6, seed=31)
+    stale_pair_count = len(upstream.current_pair_costs())
+    assert stale_pair_count == 5 * 4 // 2
+
+    victim_id, _ = downstream.best_prune()
+    downstream.apply_prune(victim_id)
+    upstream.resync_downstream_consumer(downstream.bank.w_raw)
+
+    # pair cache should still have the right COUNT (no neurons removed from
+    # upstream itself) but every entry's geometry must have been recomputed
+    # against the new w_out -- checked indirectly via internal consistency
+    # with a from-scratch rebuild, the same pattern used elsewhere in this file.
+    fresh = LayerState(bank=upstream.bank.clone(), delta_p_init=upstream.delta_p_init)
+    incremental_values = sorted(upstream.current_pair_costs().values())
+    fresh_values = sorted(fresh.current_pair_costs().values())
+    assert len(incremental_values) == len(fresh_values) == stale_pair_count
+    for a, b in zip(incremental_values, fresh_values):
+        assert abs(a - b) < 1e-3, f"post-resync pair cost should match a from-scratch rebuild: {a} vs {b}"
+
+
+def test_resync_does_not_rebuild_cache_when_build_merge_cache_false():
+    """resync must respect build_merge_cache=False -- silently forcing the
+    O(N^2) cache build here would defeat the entire point of that flag
+    (e.g. for a wide layer using --merge-width-limit, or DEFT's prune-only
+    collection pass)."""
+    upstream_bank = _random_bank(n=5, d_out=6, seed=32)
+    upstream = LayerState(bank=upstream_bank, delta_p_init=10.0, build_merge_cache=False)
+    assert len(upstream.current_pair_costs()) == 0
+
+    downstream = LayerState(bank=_random_bank(n=6, d_in=5, d_out=3, seed=33), delta_p_init=10.0)
+    victim_id, _ = downstream.best_prune()
+    downstream.apply_prune(victim_id)
+
+    upstream.resync_downstream_consumer(downstream.bank.w_raw)
+
+    assert len(upstream.current_pair_costs()) == 0, "resync must not build a pair cache that wasn't there before"
+    assert torch.allclose(upstream.capacities, upstream.bank.capacity()), "capacities must still be refreshed"
+
+
+def test_resync_wrong_shape_raises_clearly():
+    upstream = LayerState(bank=_random_bank(n=5, d_out=6, seed=34), delta_p_init=10.0)
+    wrong_shape_w_raw = torch.randn(7, 3)  # 7 rows, but upstream has 5 neurons -- genuinely inconsistent, should raise
+    with pytest.raises(ValueError, match="expected 5"):
+        upstream.resync_downstream_consumer(wrong_shape_w_raw)
+
+
+def test_resync_after_downstream_merge_produces_correct_shape():
+    """A merge on the downstream side nets -1 neuron (2 removed, 1 parent
+    appended) -- same code path as prune from upstream's perspective, since
+    upstream only ever sees the downstream layer's CURRENT w_raw, not the
+    action that produced it. This test exists to confirm that's really true
+    for a merge-shaped change, not just a prune-shaped one."""
+    upstream, downstream = _chained_upstream_downstream(upstream_n=4, downstream_n=6, seed=35)
+
+    id_a, id_b, _ = downstream.best_merge()
+    downstream.apply_merge(id_a, id_b)
+    assert downstream.n_active() == 5  # 6 - 2 + 1
+
+    upstream.resync_downstream_consumer(downstream.bank.w_raw)
+    assert upstream.bank.w_out.shape == (4, 5)
+    assert torch.allclose(upstream.bank.w_out, downstream.bank.w_raw.T)
+
+
+# ---------------------------------------------------------------------------
+# resync_upstream_provider -- the mirror of resync_downstream_consumer.
+# Found necessary (not anticipated) when a first version of
+# test_encoding_loop.py's ChainAwareEncodingLoop tests failed with a real
+# shape-mismatch error the moment upstream got pruned before downstream did.
+# ---------------------------------------------------------------------------
+
+
+def test_resync_upstream_provider_after_upstream_prune_updates_w_raw_width():
+    upstream, downstream = _chained_upstream_downstream(upstream_n=5, downstream_n=6, seed=50)
+
+    victim_id, _ = upstream.best_prune()
+    upstream.apply_prune(victim_id)
+    assert upstream.n_active() == 4
+
+    downstream.resync_upstream_provider(upstream.bank.w_out)
+
+    assert downstream.bank.w_raw.shape == (6, 4)  # (downstream_n=6 unchanged, new upstream width=4)
+    assert torch.allclose(downstream.bank.w_raw, upstream.bank.w_out.T)
+
+
+def test_resync_upstream_provider_leaves_capacity_unchanged():
+    """self_kernel/capacity depend only on gamma/beta, not on w_raw -- a
+    resync here should NOT change downstream's own capacity numbers, only
+    its fan-in-facing values (which matter for its own future merge
+    direction-finding, not its capacity)."""
+    upstream, downstream = _chained_upstream_downstream(upstream_n=5, downstream_n=6, seed=51)
+    capacities_before = downstream.capacities.clone()
+
+    victim_id, _ = upstream.best_prune()
+    upstream.apply_prune(victim_id)
+    downstream.resync_upstream_provider(upstream.bank.w_out)
+
+    assert torch.allclose(downstream.capacities, capacities_before), (
+        "capacity depends only on (gamma, beta, w_out), not w_raw -- must be unaffected by this resync"
+    )
+
+
+def test_resync_upstream_provider_refreshes_pair_geometry():
+    """Unlike capacity, the pair-geometry cache DOES depend on w_raw's
+    values (via effective_input() -> cosine similarity in merge.py) -- a
+    stale w_raw here would silently corrupt this layer's OWN internal
+    merge-candidate selection, not just the eventual rebuild shape."""
+    upstream, downstream = _chained_upstream_downstream(upstream_n=5, downstream_n=6, seed=52)
+
+    victim_id, _ = upstream.best_prune()
+    upstream.apply_prune(victim_id)
+    downstream.resync_upstream_provider(upstream.bank.w_out)
+
+    fresh = LayerState(bank=downstream.bank.clone(), delta_p_init=downstream.delta_p_init)
+    incremental_values = sorted(downstream.current_pair_costs().values())
+    fresh_values = sorted(fresh.current_pair_costs().values())
+    assert len(incremental_values) == len(fresh_values)
+    for a, b in zip(incremental_values, fresh_values):
+        assert abs(a - b) < 1e-3, f"post-resync pair cost should match a from-scratch rebuild: {a} vs {b}"
+
+
+def test_resync_upstream_provider_wrong_shape_raises_clearly():
+    downstream = LayerState(bank=_random_bank(n=6, d_in=5, seed=53), delta_p_init=10.0)
+    wrong_upstream_w_out = torch.randn(3, 4)  # .T -> 4 rows, but downstream has 6 neurons
+    with pytest.raises(ValueError, match="expected 6"):
+        downstream.resync_upstream_provider(wrong_upstream_w_out)

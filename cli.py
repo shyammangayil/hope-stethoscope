@@ -5,12 +5,14 @@ operates on ONE explicitly-named compressible layer at a time (a Conv2d+BN
 or Linear+BN, matching hope_core/adapters.py's two tested cases), not an
 automatically-traced arbitrary architecture. Automatic multi-layer graph
 detection for arbitrary PyTorch/HuggingFace models is real, useful, future
-work -- deliberately not attempted here; see NOTES.md and README.md's
-"Known limitations" section for why (short version: hope_core's own
-cross-layer weight propagation only goes one direction today -- see the
-scope note in scripts/toy_reproduction.py -- so "just auto-detect every
-layer and compress them all together" would silently produce a broken
-model, not a merely-suboptimal one).
+work -- deliberately not attempted here. hope_core's cross-layer weight
+propagation gap (once a real risk for auto-detection specifically) is now
+fixed for an explicitly-specified chain of layers (see
+hope_core/layer_state.py's resync_downstream_consumer/resync_upstream_provider
+and NOTES.md), but automatic graph tracing across an ARBITRARY model's full
+layer topology is separate, larger, unattempted scope on its own -- "just
+auto-detect every layer and compress them all together" still needs that
+tracing infrastructure built from scratch, propagation fix or not.
 
 Models must be saved as a full object (`torch.save(model, path)`, not
 `torch.save(model.state_dict(), path)`), since this CLI has no way to

@@ -17,6 +17,12 @@ before trusting either subsystem**: [`docs/weight_compression.md`](docs/weight_c
 and [`docs/kv_cache.md`](docs/kv_cache.md). This README is the map, not the
 territory.
 
+**For a direct answer to "is this done" at any point, read
+[`PROJECT_STATUS.md`](PROJECT_STATUS.md)** — an honest, kept-up-to-date
+ledger of what's actually validated versus what just runs without error.
+The two are not the same claim, and this repo has repeatedly found that
+out the hard way.
+
 ## The one principle that shaped this merge
 
 **Shared infrastructure, not shared algorithms.** These two subsystems now

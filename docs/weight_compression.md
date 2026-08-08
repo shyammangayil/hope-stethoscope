@@ -258,19 +258,27 @@ extend this script or write your own evaluation harness.
 
 Ordered roughly by how likely each is to actually bite you.
 
-1. **Cross-layer weight propagation is one-directional.** Compressing layer
-   L correctly updates layer L+1's *input*-facing weight (tested, used
-   throughout `cli.py` and both reproduction scripts). It does **not**
-   propagate layer L+1's own compression *backward* into layer L's
-   *outgoing* weight. Compressing two adjacent layers independently in the
-   same run will silently produce shape-mismatched or wrong weights for a
-   merge (a merge has no simple "which original column survived" mapping
-   the way a prune does). `scripts/toy_reproduction.py` and
-   `scripts/reproduce_paper_resnet50.py` both work around this by
-   compressing one boundary at a time, sequentially, re-extracting fresh
-   from the current model state each time — which is correct, but is not
-   the paper's single joint cross-layer greedy pass. A real fix needs an
-   explicit model-graph abstraction; see NOTES.md.
+1. **Cross-layer weight propagation — fixed.** `LayerState.resync_downstream_consumer()` /
+   `resync_upstream_provider()` plus `ChainAwareEncodingLoop`
+   (`hope_core/layer_state.py`, `hope_core/encoding_loop.py`) now keep two
+   adjacent compressible layers' shared boundary weight correctly in sync
+   in BOTH directions during a joint (not sequential) compression run,
+   verified against a real 3-module `nn.Sequential` chain rebuilt and run
+   through a real forward pass (`tests/test_encoding_loop.py`). The insight
+   that made this tractable: a layer's `w_out` isn't an independent
+   quantity, it's literally the next layer's raw incoming weight,
+   transposed — so "propagating a merge" reduces to "re-derive the shared
+   boundary tensor from whichever side just changed," which works
+   uniformly for prune and merge with no special-casing. Getting this
+   right took two attempts: the first version only handled one direction
+   and failed with a real shape-mismatch error the moment the untested
+   direction was exercised, which is what revealed the fix was incomplete
+   rather than done. `scripts/toy_reproduction.py` and
+   `scripts/reproduce_paper_resnet50.py` still use the older sequential,
+   single-boundary-at-a-time approach as of this writing — updating them
+   to use `ChainAwareEncodingLoop` for genuine joint compression is real,
+   straightforward follow-up work, not done yet. See NOTES.md for the full
+   equation-level writeup.
 2. **The O(N²) merge-candidate cache is a real bottleneck above ~100-200
    neurons per layer**, confirmed empirically (not just theoretically) while
    building the ResNet-50 script: a single ~128-channel boundary with merge

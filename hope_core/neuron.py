@@ -119,6 +119,45 @@ class NeuronBank:
             name=self.name,
         )
 
+    def with_replaced_w_out(self, new_w_out: torch.Tensor) -> "NeuronBank":
+        """Return a new bank with only w_out replaced (all other fields
+        unchanged, shallow-shared where not cloned).
+
+        This is the core primitive behind fixing the cross-layer weight
+        propagation gap (NOTES.md): w_out is not an independent quantity --
+        for bank_L it's literally bank_{L+1}'s raw incoming weight,
+        transposed (see adapters.py's extract_*_bn_bank). When layer L+1's
+        neuron set changes (prune/merge), bank_L's cached w_out silently
+        goes stale unless something re-derives it from L+1's CURRENT
+        w_raw. See LayerState.resync_downstream_consumer(), which is the
+        actual caller of this method in practice.
+        """
+        if new_w_out.shape[0] != self.n_neurons:
+            raise ValueError(
+                f"{self.name}: new_w_out has {new_w_out.shape[0]} rows, expected {self.n_neurons} (n_neurons)"
+            )
+        return replace(self, w_out=new_w_out.clone())
+
+    def with_replaced_w_raw(self, new_w_raw: torch.Tensor) -> "NeuronBank":
+        """The mirror of with_replaced_w_out, for the OTHER direction of
+        cross-layer propagation: this layer's w_raw's fan-in dimension is
+        literally its upstream provider's neuron count/output. When the
+        UPSTREAM layer's own neuron set changes (prune/merge), THIS bank's
+        w_raw goes stale in the same way w_out does on the other side --
+        see LayerState.resync_upstream_provider().
+
+        Unlike with_replaced_w_out, this does NOT change n_neurons (the
+        number of ROWS is this layer's own neuron count, untouched by an
+        upstream change -- only the fan-in WIDTH of each row changes), so
+        there's no row-count to validate here beyond basic 2D shape.
+        """
+        if new_w_raw.shape[0] != self.n_neurons:
+            raise ValueError(
+                f"{self.name}: new_w_raw has {new_w_raw.shape[0]} rows, expected {self.n_neurons} (n_neurons) "
+                "-- this replaces the fan-in dimension only, not which neurons exist"
+            )
+        return replace(self, w_raw=new_w_raw.clone())
+
     def clone(self) -> "NeuronBank":
         return replace(
             self,

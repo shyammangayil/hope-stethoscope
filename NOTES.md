@@ -66,6 +66,82 @@ from eq. 6 above.
    since it would show high distortion for near-zero capacity, but the
    fallback exists so the implementation never NaNs if it does.
 
+## Cross-layer weight propagation gap -- fixed
+
+Originally found while building `scripts/toy_reproduction.py`: compressing
+two adjacent layers (conv1 and conv2) independently in the same run
+silently broke, because nothing propagated one layer's neuron-set changes
+into the other's stored weight. Fixed in `hope_core/layer_state.py` and
+`hope_core/encoding_loop.py`; this section is the equation-level account of
+why the fix works, referenced from docs/weight_compression.md.
+
+**The insight that made this tractable**: a layer's `w_out` is not an
+independent, cacheable quantity. Per `adapters.py`'s `extract_*_bn_bank`,
+`bank_L.w_out` is constructed as `next_layer.weight.T` -- literally the
+downstream layer's own raw incoming weight, transposed. Symmetrically,
+`bank_{L+1}.w_raw`'s fan-in dimension *is* `bank_L`'s neuron count. These
+two tensors are transposes of each other across the layer boundary by
+construction, not by coincidence -- so "propagating a compression action
+across the boundary" reduces to "keep re-deriving each side's boundary
+tensor from whatever the other side currently is," not to designing some
+bespoke transformation per action type.
+
+**Why this works uniformly for prune AND merge, no special-casing needed**:
+after layer L+1 is pruned or merged, `bank_{L+1}.w_raw` already correctly
+encodes "how do my current neurons read from L's (unchanged) output space"
+-- eq. 16-18's merge machinery produces a new row that's valid across L's
+full output space by construction, the same way a pruned row is simply
+absent. So `bank_L`'s new `w_out` is always just `bank_{L+1}.w_raw.T`,
+regardless of which action produced the current `bank_{L+1}`.
+
+**The two primitives** (`hope_core/neuron.py`):
+- `NeuronBank.with_replaced_w_out(new_w_out)` -- for the "downstream
+  changed" direction.
+- `NeuronBank.with_replaced_w_raw(new_w_raw)` -- the mirror, for "upstream
+  changed."
+
+**The two `LayerState` methods** (`hope_core/layer_state.py`):
+- `resync_downstream_consumer(downstream_w_raw)` -- call when the layer
+  this one feeds INTO changes. Refreshes `w_out`, capacities, `e_active`,
+  and (if `build_merge_cache`) the full pair-geometry cache, since merge
+  candidates' optimal-parent computation depends on `w_out` via `v*`
+  (section 7.1.2's `best_numer_vec`).
+- `resync_upstream_provider(upstream_w_out)` -- the mirror, call when the
+  layer this one reads FROM changes. Refreshes `w_raw` and (if
+  `build_merge_cache`) the pair-geometry cache -- NOT capacities, since
+  `self_kernel`/capacity depend only on `(gamma, beta)`, never on `w_raw`.
+  Pair geometry still needs refreshing because `compute_optimal_parent`'s
+  direction-finding uses `effective_input()`, which reads `w_raw`'s actual
+  values via cosine similarity between this layer's own neurons -- a stale
+  fan-in here silently corrupts this layer's OWN internal merge-candidate
+  selection, not just the eventual rebuild shape. This was the harder half
+  of the bug to find: a first attempt at this fix only implemented the
+  downstream-consumer direction, and a test compressing two real adjacent
+  layers jointly failed with a genuine shape-mismatch `ValueError` the
+  moment the layer got pruned *before* its consumer did -- which is what
+  revealed the upstream-provider direction was still missing, rather than
+  it being anticipated in the original design.
+
+**The orchestration layer** (`hope_core/encoding_loop.py`):
+`ChainAwareEncodingLoop` wraps a `ProgressiveEncodingLoop` by composition
+(not inheritance/modification -- the wrapped loop's own `step()`/`run()`
+are used exactly as-is, unmodified from what `test_encoding_loop.py`
+already verified). Given a `chain` dict (`{downstream_name: upstream_name}`),
+it calls the appropriate resync method on the *other* layer after every
+action, in whichever direction is relevant. Verified end-to-end
+(`tests/test_encoding_loop.py::test_real_two_layer_joint_compression_end_to_end`)
+against a real 3-module `nn.Sequential` chain: two adjacent Linear+BN
+layers compressed *jointly* (interleaved actions on both, driven by the
+same global greedy selection the paper specifies -- not the sequential,
+one-boundary-at-a-time workaround `scripts/toy_reproduction.py` still
+uses), rebuilt via `adapters.py`, and run through a real forward pass.
+
+**Not yet done**: `scripts/toy_reproduction.py` and
+`scripts/reproduce_paper_resnet50.py` haven't been updated to use
+`ChainAwareEncodingLoop` -- they still compress one boundary at a time,
+sequentially, which is correct but not the paper's single joint pass. Real,
+scoped follow-up work, not attempted in this session.
+
 ## Formulas confirmed but not yet wired into code (next: block eviction, DEFT)
 
 - eq. 19-20 (block eviction): `J_evict = sum_{l=1}^{2} N_active^(l) * (E_active^(l) / E_identity)`,
