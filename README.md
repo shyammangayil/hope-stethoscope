@@ -2,7 +2,8 @@
 
 An observability-and-intervention platform for neural networks, currently
 made of two independently-validated subsystems that got merged into one
-repository:
+repository, plus a third that's just begun (see "Model-wide observability"
+below):
 
 - **Weight-space compression** (`hope_core/`) — an implementation of HOPE
   (arXiv:2607.21366), modeling neurons as rank-1 Hilbert-Schmidt operators to
@@ -11,6 +12,17 @@ repository:
   `harness/`, `integrations/`) — hooks into a running HuggingFace model's KV
   cache during generation, to observe, benchmark-compress, and (experimentally)
   causally edit it.
+- **Model-wide observability framework** (`stethoscope/`, Phase 2 of 9 —
+  new) — the planned generalization of the KV-cache work above into
+  model-wide observation, intervention, and causal experimentation
+  (residual stream, attention Q/K/V, MLP/neuron activations, not just
+  the KV cache). Phase 2 bridges the existing, unmodified `CacheTap`
+  mechanism into the new framework, so KV-cache observation now works
+  through both APIs at once. See
+  [`docs/ARCHITECTURE_DELTA_REPORT.md`](docs/ARCHITECTURE_DELTA_REPORT.md)
+  for the full plan and [`TASKS.md`](TASKS.md) for live status — residual/
+  attention/MLP observation, interventions, and causal experiments don't
+  exist yet.
 
 Full detail on each lives in its own doc — **read those, not just this file,
 before trusting either subsystem**: [`docs/weight_compression.md`](docs/weight_compression.md)
@@ -48,9 +60,10 @@ confirmed at the scale that would make either one's own paper/claims stick:
 |---|---|---|
 | Weight compression | 78 tests incl. a Monte Carlo check of the self-kernel formula against its own definition, and an end-to-end merge-optimality check against naive baselines. Toy reproduction (synthetic data) runs and shows sane, graceful degradation. | The paper's own ResNet-50/ImageNet numbers — needs real ImageNet + real pretrained weights, neither reachable from the sandbox this was built in. `scripts/reproduce_paper_resnet50.py` is written and structurally verified against the real ResNet-50 architecture, but never run against real data. |
 | KV-cache introspection | 96 tests (was 80). Full demo pipeline (`examples/run_demo.py`) re-run fresh in this session, including a real, un-hidden failing criterion (`hook_and_inspector_overhead_under_10pct`, measured +92% overhead) and a real infrastructure-unavailable guard firing correctly instead of fabricating a perplexity number. Confirmed (per `CHANGELOG.md`) working against real `google/gemma-3-4b-it` on 2026-07-29 for cache observation. **New**: `tests/test_real_gemma3_offline.py` constructs a REAL (tiny, untrained) `transformers.Gemma3ForCausalLM` with no network access at all, and runs the actual `CacheTap` → `generate()` → modifier → inspector pipeline against it — confirming the mechanics (not just the interface) against the authentic model class and its real heterogeneous sliding-window/global cache pattern, across 4 of the 7 modifier types. | The causal-editing path against the real *pretrained* Gemma checkpoint specifically (tokenizer, real weights, `--compare-baseline`) — still "some manual runs happened, not yet a repeatable, checked-in result" against real weights, though the underlying mechanics it depends on are now much more thoroughly verified than before. The `hook_and_inspector_overhead_under_10pct` failure is real and unresolved. |
+| Model-wide observability (`stethoscope/`, Phase 2 of 9) | 106 tests (71 Phase 1 + 35 Phase 2). `ComponentRegistry` enumeration is exact-set-tested. `HFTransformersAdapter` validated against two REAL, offline-constructed models (Gemma3 GQA + heterogeneous layers, and Llama, a second family). **New**: `Observer`/`CapturePolicy` bridge the existing `CacheTap` mechanism into `ObservationEvent`s without editing `core/hooks.py` at all (verified via `git diff`) — validated against a real `CacheTap` running on BOTH the synthetic model's `NumpyKVCache` and a real offline Gemma3's `DynamicCache`. See `TASKS.md` §2/§3 for what was found and decided along the way. | Residual/attention/MLP observation (Phase 3-5), interventions (Phase 6), causal experiments (Phase 7), HOPE integration (Phase 8), and the fully-automatic `with stethoscope.observe(model, ...):` sugar from the spec — deliberately deferred, see `stethoscope/observer.py`'s module docstring for why. No CLI wiring yet. |
 
-**158 tests at the initial merge, 175 after the CLI update, 187 as of the real-Gemma3-offline work below.**
-from the repo root) — the two suites were run independently before the merge
+**Test count over time: 158 (initial merge) → 175 (CLI update) → 187 (real-Gemma3-offline work) → 204 (later layer_state/encoding_loop/neuron growth, per `git log`'s Aug 8 commit — not previously called out in this file) → 275 (`stethoscope/` Phase 1) → 310 (`stethoscope/` Phase 2, see above).**
+(`pytest tests/ -v` from the repo root) — the two suites were run independently before the merge
 and once more together immediately after, specifically to catch any
 import-path breakage from moving files around. None found.
 
@@ -85,13 +98,26 @@ hope-stethoscope/
 ├── debugger/                   # KV-cache: Streamlit event-log explorer
 ├── config/                      # KV-cache: models.yaml, budgets.yaml
 │
+├── stethoscope/             # model-wide observability, Phase 2 of 9 (new)
+│   ├── ids.py                # ComponentID, ComponentType
+│   ├── manifest.py            # ModelManifest + sub-manifests
+│   ├── registry.py             # ComponentRegistry
+│   ├── events.py                # ObservationEvent, ObservationPhase
+│   ├── capture.py                # CaptureMode, CapturePolicy
+│   ├── storage.py                 # ObservationEventSink (InMemory / SQLite)
+│   ├── observer.py                 # Observer -- bridges core.hooks.CacheTap, unmodified
+│   └── adapters/                    # SyntheticAdapter, HFTransformersAdapter
+│
 ├── scripts/                # weight-space toy + real (ResNet-50) reproduction
 ├── examples/                # BOTH: quickstart.py (weights), run_demo.py /
 │                            #   run_gemma.py / run_mutation_demo.py (KV cache)
-├── tests/                   # BOTH subsystems' tests, 187 total
+├── tests/                   # ALL THREE subsystems' tests, 310 total
 ├── docs/
 │   ├── weight_compression.md   # full README for hope_core (was the top-level README)
-│   └── kv_cache.md              # full README for the KV-cache subsystem
+│   ├── kv_cache.md              # full README for the KV-cache subsystem
+│   ├── ARCHITECTURE_EVOLUTION_SPEC.md  # verbatim task spec for the stethoscope/ evolution
+│   └── ARCHITECTURE_DELTA_REPORT.md     # Phase 0 audit + Phase 1 plan for stethoscope/
+├── TASKS.md                  # live status/resumption tracker for the stethoscope/ work
 ├── NOTES.md                 # weight-space: paper-equation-to-code traceability
 ├── CHANGELOG.md               # KV-cache subsystem's development history
 └── success_criteria.md         # KV-cache subsystem's own stated scorecard
@@ -102,11 +128,11 @@ hope-stethoscope/
 ```bash
 python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
-# For real-model modes on either side (see the validation table above for
-# what that unlocks and what it doesn't):
+# For real-model modes (see the validation table above for what that
+# unlocks and what it doesn't):
 #   pip install torchvision                      # weight-space real repro
-#   pip install transformers accelerate           # KV-cache real Gemma
-python3 -m pytest tests/ -v   # expect 187 passed
+#   pip install transformers accelerate           # KV-cache real Gemma, and stethoscope/'s HFTransformersAdapter
+python3 -m pytest tests/ -v   # expect 310 passed
 ```
 
 ## Quick start
@@ -147,6 +173,47 @@ entry point, not as a reimplementation. See `docs/kv_cache.md` for the full
 independently verified about the underlying mechanics without needing
 network access.
 
+**Model-wide observability (`stethoscope/`, Phase 2)** — no CLI wiring yet
+(see `TASKS.md`); this phase is a library only, for now:
+```python
+from stethoscope.adapters.huggingface import HFTransformersAdapter
+from stethoscope.registry import ComponentRegistry
+# mlp_gated=True here because Gemma3 IS a gated (GeGLU) architecture -- a
+# documented fact about the family, not something the adapter guesses on
+# its own; see stethoscope/adapters/huggingface.py's module docstring.
+manifest = HFTransformersAdapter(my_gemma_model, mlp_gated=True).build_manifest()
+registry = ComponentRegistry.from_manifest(manifest)
+print(len(registry), "components discovered")           # attention/MLP/norm/residual/KV-cache per layer
+```
+For the synthetic (numpy-only, no torch needed) fixture instead:
+```python
+from stethoscope.adapters.synthetic import SyntheticAdapter
+from examples.synthetic_model import build_demo_model
+manifest = SyntheticAdapter(build_demo_model()).build_manifest()
+```
+**New in Phase 2**: observing a real KV-cache generation, one extra line
+over plain `CacheTap` usage — the existing `core.hooks.CacheTap` mechanism
+runs completely unmodified underneath:
+```python
+from transformers import DynamicCache
+from core.hooks import CacheTap
+from stethoscope.observer import Observer
+from stethoscope.capture import CapturePolicy, CaptureMode
+
+observer = Observer(model_id="my-gemma3", policy=CapturePolicy(mode=CaptureMode.FULL))
+cache = CacheTap(DynamicCache(config=my_gemma_model.config), observer.kv_cache_sink(), run_id=observer.experiment_id)
+my_gemma_model.generate(input_ids=input_ids, past_key_values=cache, max_new_tokens=20)
+for event in observer.events:
+    print(event.component_id, event.layer, event.statistics["l2_norm"])
+```
+See `docs/ARCHITECTURE_DELTA_REPORT.md` and `TASKS.md` for what this can
+and can't do yet — KV-cache observation works end to end; there is no
+residual/attention/MLP observation, no intervention framework, and no
+causal experiment engine in this phase, and the fully-automatic
+`with stethoscope.observe(model, ...):` form from the architecture spec
+is deliberately not built (see `stethoscope/observer.py`'s module
+docstring for why).
+
 ## Not done (explicitly — this remains a work in progress, not a finished platform)
 
 - **CLI unification is now close to complete, with one deliberate exception.**
@@ -174,8 +241,17 @@ network access.
   trail.
 - **Both subsystems' real-scale validation gaps are still open** (see the
   table above) — none of the CLI or merge work closed either one.
+- **`stethoscope/` is Phase 2 of 9** (component identity + architecture
+  discovery + KV-cache observation only) — no residual/attention/MLP
+  observation, no interventions, no causal experiments, no CLI wiring,
+  no unification with `core.kv_modifiers` yet (that's explicitly Phase 6
+  — see `TASKS.md`). `mlp.gated`/`mlp.kind` cannot be determined from an
+  HF config alone across arbitrary model families and must be supplied
+  explicitly (`mlp_gated=True/False`) when known — see
+  `stethoscope/adapters/huggingface.py`'s module docstring for why this
+  is a documented limitation, not an oversight.
 
-**187 tests total** as of this update (`pytest tests/ -v` from the repo root).
+**310 tests total** as of this update (`pytest tests/ -v` from the repo root).
 
 Also as of this update: `tests/test_real_gemma3_offline.py` (see the
 validation table above), and an important, non-obvious finding it surfaced

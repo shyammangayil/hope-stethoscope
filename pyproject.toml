@@ -35,5 +35,5 @@ hope = "cli:cli"
 py-modules = ["cli"]
 
 [tool.setuptools.packages.find]
-include = ["hope_core*", "core*", "compression*", "harness*", "integrations*"]
+include = ["hope_core*", "core*", "compression*", "harness*", "integrations*", "stethoscope*"]
 

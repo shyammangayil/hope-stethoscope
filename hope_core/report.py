@@ -5,6 +5,17 @@ pruning baseline. This module is pure aggregation/formatting over data
 that's already been validated elsewhere (kernels/neuron/costs/merge/layer_state);
 its own risk profile is "did I compute the right summary statistic", not
 "is the underlying math correct".
+
+Naming note, added when the top-level `stethoscope/` package was
+introduced (see `docs/ARCHITECTURE_DELTA_REPORT.md` §12 and
+`TASKS.md`): `StethoscopeReport` here is unrelated to that package. This
+class is a static, weight-space, post-hoc report over a HOPE
+prune/merge run; `stethoscope/` is the runtime observability/
+intervention/causal-experiment framework the whole repository is named
+after. Not a Python import collision (different fully-qualified paths --
+`hope_core.report.StethoscopeReport` vs. `stethoscope.*`), just two
+different things that happen to share a name for a good reason: both are
+"the Stethoscope," at two different points in this project's evolution.
 """
 
 from __future__ import annotations
